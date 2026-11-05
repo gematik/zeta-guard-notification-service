@@ -1,0 +1,10 @@
+<?xml version="1.0" ?>
+<SmellBaseline>
+  <ManuallySuppressedIssues/>
+  <CurrentIssues>
+    <ID>LargeClass:AcceptanceTestCollection.kt:AcceptanceTestCollection</ID>
+    <ID>TooManyFunctions:JdbcStorageRecordDAO.kt:JdbcStorageRecordDAO : StorageRecordDAO</ID>
+    <ID>TooManyFunctions:PushersCollection.kt:PushersCollection</ID>
+    <ID>TooManyFunctions:RestPushGatewayClient.kt:RestPushGatewayClient : PushGatewayPort</ID>
+  </CurrentIssues>
+</SmellBaseline>

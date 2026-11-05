@@ -1,0 +1,61 @@
+/*
+ * #%L
+ * ZETA Notification Service
+ * %%
+ * (C) EY Strategy & Transactions GmbH, 2026, licensed for gematik GmbH
+ * %%
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * ******
+ *
+ * For additional notes and disclaimer from gematik and in case of changes by gematik find details in the "Readme" file.
+ * #L%
+ */
+package de.gematik.zeta.notificationservice.testsupport
+
+import java.util.logging.Handler
+import java.util.logging.Level
+import java.util.logging.LogRecord
+import java.util.logging.Logger
+
+inline fun recordedLog(
+    loggedClass: Class<*>,
+    block: () -> Unit,
+): String {
+    val logger = Logger.getLogger(loggedClass.name)
+    val messages = mutableListOf<String>()
+    val handler =
+        object : Handler() {
+            override fun publish(record: LogRecord) {
+                synchronized(messages) { messages += record.message }
+            }
+
+            override fun flush() = Unit
+
+            override fun close() = Unit
+        }
+    handler.level = Level.ALL
+    val previousLevel = logger.level
+    val previousUseParent = logger.useParentHandlers
+    logger.level = Level.ALL
+    logger.useParentHandlers = false
+    logger.addHandler(handler)
+    return try {
+        block()
+        synchronized(messages) { messages.joinToString("\n") }
+    } finally {
+        logger.removeHandler(handler)
+        logger.useParentHandlers = previousUseParent
+        logger.level = previousLevel
+    }
+}

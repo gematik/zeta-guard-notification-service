@@ -1,0 +1,230 @@
+app:
+  auth:
+    user-info-header: zeta-user-info
+
+# Push Gateway (external component, reached directly over the internet — not via the service mesh).
+#   push-gateway.allowed-base-urls  – comma-separated allow-list of Push Gateway base URLs.
+#   push-gateway.trusted-ca-paths   – optional; comma-separated paths to PEM CA files. When the target is
+#                                     HTTPS with a CA the default trust store does not know (e.g. Let's
+#                                     Encrypt staging or a self-signed test CA), point this at the CA. These
+#                                     are trusted *in addition to* the system default anchors, so publicly
+#                                     signed CAs keep working. Leave empty in production. Injected per
+#                                     environment via env vars by the Helm chart.
+# Client-side certificates (for mTLS towards the Push Gateway):
+#  push-gateway.mtls.client-certificate-path - path to the PEM certificate file for mTLS
+#  push-gateway.mtls.client-key-path - path to the PEM key file for mTLS
+#  push-gateway.mtls.client-key-password - password to the PEM key file in case it's encrypted
+
+push-gateway:
+  connect-timeout: PT3S
+  read-timeout: PT10S
+  retry:
+    give-up-after: PT1H
+    initial-delay: PT1S
+    max-delay: PT5M
+    max-attempts: 3
+  batch:
+    max-count: 100
+    max-time: PT1S
+
+hsm-proxy:
+  endpoint: ${HSM_PROXY_ENDPOINT:localhost:50051}
+
+notification:
+  # notification.datasource.db-kind - which of the supported engines the deployment runs on:
+  #   postgresql, mariadb, mysql, mssql, oracle. Deliberately without a default: when it is unset
+  #   the engine is inferred from the JDBC url's prefix, and a default would both make that dead
+  #   code and privilege one engine. Set it when the url does not say which engine it is - a MariaDB
+  #   server addressed as jdbc:mysql:, above all.
+  persistence:
+    retention: PT24H
+    purge:
+      interval: 5m
+    sealing:
+      enabled: false
+  api:
+    rs:
+      enabled: true
+    fdv:
+      enabled: true
+  encryption:
+    enabled: false
+  history:
+    retention: P30D
+
+quarkus:
+  # One image, every supported engine. `quarkus.datasource.db-kind` is a BUILD-TIME property, so
+  # each engine gets its own named datasource and all five drivers are baked into the image.
+  # At runtime exactly one of them is given a jdbc.url; Quarkus deactivates the others on its own
+  # ("Datasource '%s' was deactivated automatically because its URL is not set") and their Flyway
+  # containers skip migrate-at-start along with them. See README "Supported databases".
+  #
+  # A deployment does not have to spell the engine into those keys, though. It configures the
+  # database the way a single-engine service would - QUARKUS_DATASOURCE_JDBC_URL/_USERNAME/_PASSWORD
+  # - and EngineAgnosticDatasourceKeysFactory maps that onto the named datasource of the engine
+  # NOTIFICATION_DATASOURCE_DB_KIND selects (or the one the url's prefix implies). The per-engine
+  # keys keep working and keep precedence: when both are set, the value from the higher-ordinal
+  # config source wins, and a tie goes to the per-engine one.
+  #
+  # Nothing may inject a bare javax.sql.DataSource: without a default datasource that is an
+  # unsatisfied dependency, and injecting an inactive one fails startup. ActiveDataSourceProducer
+  # resolves the active one instead, and is also where a misconfigured database is reported - the
+  # config layer above stays silent, because it runs several times per launch and before logging.
+  datasource:
+    # There is no default datasource, only the named ones below. Saying so does two things: it keeps
+    # Dev Services from trying to infer a db-kind for it and warning on every build that it cannot,
+    # and it switches off the implicit default-db-kind resolution that would otherwise turn the
+    # engine-agnostic keys above into a sixth, real datasource during augmentation.
+    devservices:
+      enabled: false
+    postgresql:
+      db-kind: postgresql
+    mariadb:
+      db-kind: mariadb
+      devservices:
+        enabled: false
+    mysql:
+      db-kind: mysql
+      devservices:
+        enabled: false
+    mssql:
+      db-kind: mssql
+      devservices:
+        enabled: false
+    oracle:
+      db-kind: oracle
+      devservices:
+        enabled: false
+  fault-tolerance:
+    global:
+      rate-limit:
+        enabled: false
+        value: 1000
+  # The DDL differs per engine (binary and text types, collations), so each datasource migrates from
+  # its own location. The statements the DAO issues are deliberately vendor-neutral; only this DDL
+  # is not. MariaDB is migrated by the MySQL Flyway module - quarkus-flyway-mariadb does not exist.
+  flyway:
+    postgresql:
+      migrate-at-start: true
+      locations: db/migration/postgresql
+    mariadb:
+      migrate-at-start: true
+      locations: db/migration/mariadb
+    mysql:
+      migrate-at-start: true
+      locations: db/migration/mysql
+    mssql:
+      migrate-at-start: true
+      locations: db/migration/mssql
+    oracle:
+      migrate-at-start: true
+      locations: db/migration/oracle
+  http:
+    access-log:
+      enabled: false  # A_29990 access log and tracing must remain disabled while the notification service receives KVNRs and Telematik-Ids in request target URLs
+      pattern: '%h %l %u %t "%r" %s %b traceId=%{X,traceId} spanId=%{X,spanId}'
+    ssl:
+      client-auth: request
+    auth:
+      mtls:
+        priority: 900
+      permission:
+        fdv:
+          paths: /pushers,/pushers/*,/channels,/channels/*,/history,/history/*
+          policy: authenticated
+        rs:
+          paths: /notifications,/notifications/*,/users/*
+          policy: authenticated
+          auth-mechanism: X509
+  tls:
+    protocols: TLSv1.3,TLSv1.2
+    cipher-suites:
+      - TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
+      - TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
+      - TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+      - TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+      - TLS_AES_128_GCM_SHA256
+      - TLS_AES_256_GCM_SHA384
+    trust-store:
+      certificate-expiration-policy: reject
+  kotlin-serialization:
+    json:
+      ignore-unknown-keys: true
+  log:
+    console:
+      format: "%d{HH:mm:ss} %-5p traceId=%X{traceId}, parentId=%X{parentId}, spanId=%X{spanId}, sampled=%X{sampled} [%c{2.}] (%t) %s%e%n"
+  otel:
+    logs:
+      enabled: true
+    metrics:
+      enabled: true
+    security-events:
+      enabled: true
+      event-types: all
+    traces:
+      enabled: false  # A_29990 access log and tracing must remain disabled while the notification service receives KVNRs and Telematik-Ids in request target URLs
+
+"%dev":
+  push-gateway:
+    allowed-base-urls: http://localhost:8080/push/v1/
+  notification:
+    persistence:
+      sealing:
+        enabled: false
+    history:
+      enabled: true
+    channels:
+      allowed:
+        - epa.documents.new
+        - epa.consent.changed
+    encryption:
+      enabled: false
+  quarkus:
+    http:
+      auth:
+        permission:
+          rs:
+            enabled: false
+
+"%test":
+  push-gateway:
+    allowed-base-urls: http://localhost:8080/push/v1/
+    retry:
+      give-up-after: PT1.5S
+      initial-delay: PT0.25S
+  notification:
+    persistence:
+      sealing:
+        enabled: true
+    history:
+      enabled: true
+    channels:
+      allowed:
+        - channel1
+        - channel2
+        - epa.documents.new
+    encryption:
+      enabled: false
+
+  quarkus:
+    # Quarkus runs an @Scheduled(every=...) job once at startup, not first after the interval has
+    # elapsed - so the purge fires while the suite is setting up its fixtures, deleting expired rows
+    # and writing its lease from another connection. That races every test that backdates a record,
+    # and on Oracle it fails hard: TRUNCATE needs an exclusive table lock and gives up immediately
+    # with ORA-00054 rather than waiting. No test relies on the scheduler firing - they all call
+    # purgeExpired() (or the probe) directly - so the background trigger is simply off here.
+    scheduler:
+      enabled: false
+    datasource:
+      postgresql:
+        devservices:
+          enabled: false
+    http:
+      auth:
+        permission:
+          rs:
+            enabled: false
+    otel:
+      exporter:
+        otlp:
+          enabled: false

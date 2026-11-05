@@ -1,0 +1,15 @@
+{
+  "name": "Push Gateway: plain batch notify (always success, echoes ids)",
+  "request": {
+    "method": "POST",
+    "urlPath": "/push/v1/notify/batch"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "transformers": ["response-template"],
+    "body": "{\"results\":[{{#each (jsonPath request.body '$.notifications')}}{\"id\":\"{{this.id}}\",\"status\":\"success\",\"rejected\":[],\"error\":null}{{#unless @last}},{{/unless}}{{/each}}],\"summary\":{\"total\":{{size (jsonPath request.body '$.notifications')}},\"successful\":{{size (jsonPath request.body '$.notifications')}},\"failed\":0,\"partial\":0}}"
+  }
+}

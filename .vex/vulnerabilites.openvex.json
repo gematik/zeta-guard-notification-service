@@ -1,0 +1,8 @@
+{
+  "@context": "https://openvex.dev/ns/v0.2.0",
+  "@id": "https://openvex.dev/docs/public/vex-notification-service",
+  "author": "Unknown Author",
+  "version": 1,
+  "statements": [],
+  "timestamp": "2026-08-10T00:00:00Z"
+}

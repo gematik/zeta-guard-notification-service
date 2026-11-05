@@ -1,0 +1,221 @@
+# Local development setup: notification-service (JVM image) + WireMock as dummy Push Gateway.
+#
+# Usage:
+#   ./gradlew build                  # Dockerfile.jvm only packages the pre-built quarkus-app/
+#   docker compose up --build
+#
+# Remote debugging: attach a JDWP debugger to localhost:5005.
+#
+# The WireMock push gateway records every incoming call in its request journal:
+#   curl localhost:8081/__admin/requests
+# Stub mappings live in local-dev/push-gateway/mappings/.
+#
+# Note: pusher URLs registered with the service must exactly match the allowed
+# base URL (trailing slash included): http://push-gateway:8080/push/v1/
+#
+# Databases: the image carries a driver for every supported engine and runs against whichever one
+# NS_DB_URL points at -- the engine follows from the url's prefix. PostgreSQL is wired up by
+# default; to use another engine, point the same three variables somewhere else, e.g.
+#   NS_DB_URL=jdbc:oracle:thin:@oracle:1521/freepdb1 \
+#     NS_DB_USER=notification NS_DB_PASSWORD=notification \
+#     docker compose --profile oracle up --build
+# SQL Server needs two extras in its url: mssql-jdbc defaults to encrypt=true and validates the
+# certificate, which the dev container's self-signed one fails, and its database is created by the
+# mssql-init companion rather than by the image:
+#   NS_DB_URL='jdbc:sqlserver://mssql:1433;databaseName=notification;encrypt=false' \
+#     NS_DB_USER=sa NS_DB_PASSWORD='Notification1!' \
+#     docker compose --profile mssql up --build
+# NS_DB_KIND is only needed when the url does not say which engine it is: a MariaDB server reached
+# through a jdbc:mysql: url wants NS_DB_KIND=mariadb.
+# The postgres container still starts in these cases -- it has no profile -- and simply sits idle.
+
+services:
+  notification-service:
+    build:
+      context: ./notification-service
+      dockerfile: src/main/docker/Dockerfile.jvm
+    ports:
+      - "8080:8080" # HTTP
+      - "5005:5005" # JDWP remote debug
+    environment:
+      JAVA_DEBUG: "true"
+      JAVA_DEBUG_PORT: "*:5005"
+      PUSH_GATEWAY_ALLOWED_BASE_URLS: http://push-gateway:8080/push/v1/
+      NOTIFICATION_CHANNELS_ALLOWED: epa.documents.new,epa.consent.changed
+      NOTIFICATION_ENCRYPTION_ENABLED: "false"
+      QUARKUS_HTTP_AUTH_PERMISSION_RS_ENABLED: "false"
+
+      # One database, named once. NS_DB_KIND stays empty unless the url's prefix is ambiguous; an
+      # empty value counts as unset.
+      QUARKUS_DATASOURCE_JDBC_URL: ${NS_DB_URL-jdbc:postgresql://postgres:5432/notification}
+      QUARKUS_DATASOURCE_USERNAME: ${NS_DB_USER-notification}
+      QUARKUS_DATASOURCE_PASSWORD: ${NS_DB_PASSWORD-notification}
+      NOTIFICATION_DATASOURCE_DB_KIND: ${NS_DB_KIND-}
+      HSM_PROXY_ENDPOINT: hsm-proxy:50051
+      HSM_PROXY_PLAIN_TEXT_ACCEPTED: "true"
+    # Flyway migrates at boot, so the service has to wait for whichever engine it was pointed at.
+    # `required: false` is what lets one depends_on block cover all five: a dependency on a service
+    # whose profile is not enabled is skipped rather than rejected (without it, compose refuses the
+    # whole project with "depends on undefined service"). postgres carries no profile and so is
+    # always waited for, idle or not.
+    depends_on:
+      push-gateway:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+      mariadb:
+        condition: service_healthy
+        required: false
+      mysql:
+        condition: service_healthy
+        required: false
+      # Waits for mssql transitively: mssql-init runs once the engine is healthy.
+      mssql-init:
+        condition: service_completed_successfully
+        required: false
+      oracle:
+        condition: service_healthy
+        required: false
+      hsm-proxy:
+        condition: service_started
+
+  # Creates keychain entries against the simulator (see README "Record keys"). Only started on
+  # demand; it writes the keychain to build/keychain/ (git-ignored), as the calling user, who can
+  # write there:
+  #   ./gradlew :keychain-generator:installDist
+  #   docker compose --profile keychain build keychain-generator
+  #   mkdir -p build/keychain
+  #   docker compose run --rm --user "$(id -u):$(id -g)" keychain-generator
+  # KEYCHAIN_ENTRY_ID, KEYCHAIN_ACTIVE_FROM, KEYCHAIN_EMERGENCY, KEYCHAIN_INPUT_FILE and
+  # KEYCHAIN_OUTPUT_FILE are passed through (empty counts as unset); the files are paths inside the
+  # container, under /keychain.
+  keychain-generator:
+    profiles: [ keychain ]
+    build:
+      context: ./keychain-generator
+      dockerfile: src/main/docker/Dockerfile
+    environment:
+      HSM_PROXY_ENDPOINT: hsm-proxy:50051
+      HSM_PROXY_KEK_ID: notification-service-keychain-kek-aesgcm-v1
+      KEYCHAIN_ENTRY_ID: ${KEYCHAIN_ENTRY_ID-}
+      KEYCHAIN_ACTIVE_FROM: ${KEYCHAIN_ACTIVE_FROM-}
+      KEYCHAIN_EMERGENCY: ${KEYCHAIN_EMERGENCY-}
+      KEYCHAIN_INPUT_FILE: ${KEYCHAIN_INPUT_FILE-}
+      KEYCHAIN_OUTPUT_FILE: ${KEYCHAIN_OUTPUT_FILE-/keychain/keychain.json}
+    volumes:
+      - ./build/keychain:/keychain
+    depends_on:
+      hsm-proxy:
+        condition: service_started
+
+  hsm-proxy:
+    image: ${HSM_SIM_IMAGE:-registry.tas-devtools-gitlab.spree.de/zeta/zeta-guard/ngx_pep/hsm_sim:main-c86ca5b5}
+    platform: linux/amd64
+    ports:
+      - "50051:50051"
+
+  postgres:
+    image: postgres:17
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: notification
+      POSTGRES_USER: notification
+      POSTGRES_PASSWORD: notification
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U notification -d notification"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  # Alternative engines, started only with --profile <name>. Versions track what Keycloak documents
+  # as supported, so the service can share an existing database.
+  mariadb:
+    profiles: ["mariadb"]
+    image: mariadb:11.8
+    ports:
+      - "3306:3306"
+    environment:
+      MARIADB_DATABASE: notification
+      MARIADB_USER: notification
+      MARIADB_PASSWORD: notification
+      MARIADB_ROOT_PASSWORD: notification
+    healthcheck:
+      test: ["CMD-SHELL", "healthcheck.sh --connect --innodb_initialized"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  mysql:
+    profiles: ["mysql"]
+    image: mysql:8.4
+    ports:
+      - "3307:3306"
+    environment:
+      MYSQL_DATABASE: notification
+      MYSQL_USER: notification
+      MYSQL_PASSWORD: notification
+      MYSQL_ROOT_PASSWORD: notification
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -unotification -pnotification"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  mssql:
+    profiles: ["mssql"]
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    ports:
+      - "1433:1433"
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: "Notification1!"
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P \"$$MSSQL_SA_PASSWORD\" -Q 'SELECT 1'"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  # The SQL Server image has no MSSQL_DATABASE equivalent, so unlike the other four engines the
+  # database has to be created after the server is up. One shot, idempotent, then exits.
+  mssql-init:
+    profiles: ["mssql"]
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    entrypoint:
+      - /opt/mssql-tools18/bin/sqlcmd
+      - -C # trust the container's self-signed certificate
+      - -S
+      - mssql
+      - -U
+      - sa
+      - -P
+      - "Notification1!"
+      - -Q
+      - "IF DB_ID('notification') IS NULL CREATE DATABASE notification"
+    depends_on:
+      mssql:
+        condition: service_healthy
+    restart: "no"
+
+  oracle:
+    profiles: ["oracle"]
+    # slim-faststart: a plain Oracle image spends minutes initialising a database on first boot.
+    image: gvenzl/oracle-free:slim-faststart
+    ports:
+      - "1521:1521"
+    environment:
+      ORACLE_PASSWORD: notification
+      APP_USER: notification
+      APP_USER_PASSWORD: notification
+    healthcheck:
+      test: ["CMD-SHELL", "healthcheck.sh"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+
+  push-gateway:
+    image: wiremock/wiremock:3.13.2
+    ports:
+      - "8081:8080" # stubs + admin API (request journal) reachable from the host
+    volumes:
+      - ./local-dev/push-gateway:/home/wiremock:ro

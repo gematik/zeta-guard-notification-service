@@ -1,0 +1,7 @@
+{{#description}}
+    /* {{{.}}} */
+{{/description}}
+
+    @SerialName("{{#lambda.escapeDollar}}{{baseName}}{{/lambda.escapeDollar}}")
+{{! Note that required properties may still be nullable according to the OpenAPI specification. }}
+{{#useBeanValidation}}{{>beanValidation}}{{>beanValidationModel}}{{/useBeanValidation}}    {{>modelMutable}} {{{name}}}: {{#isEnum}}{{classname}}.{{nameInPascalCase}}{{/isEnum}}{{^isEnum}}{{{dataType}}}{{/isEnum}}{{#isNullable}}?{{/isNullable}}

@@ -1,0 +1,91 @@
+[versions]
+kotlin = "2.4.10"
+spotless = "8.10.4"
+# ktlint is resolved by Spotless through a detached configuration, which dependency locking
+# cannot reach - pinning it here is the only way to make formatting reproducible.
+ktlint = "1.8.0"
+openapiGenerator = "7.26.0"
+detekt = "2.0.0-alpha.6"
+sonarqube = "7.5.0.8588"
+kotest = "6.2.6"
+wiremock = "3.13.2"
+mockk = "1.14.11"
+cyclonedx = "3.5.1"
+
+[libraries]
+# --- Quarkus (versions managed by the quarkus-bom platform, see build.gradle.kts) ---
+quarkus-rest = { module = "io.quarkus:quarkus-rest" }
+quarkus-rest-kotlin-serialization = { module = "io.quarkus:quarkus-rest-kotlin-serialization" }
+quarkus-rest-client = { module = "io.quarkus:quarkus-rest-client" }
+quarkus-rest-client-kotlin-serialization = { module = "io.quarkus:quarkus-rest-client-kotlin-serialization" }
+quarkus-kotlin = { module = "io.quarkus:quarkus-kotlin" }
+quarkus-config-yaml = { module = "io.quarkus:quarkus-config-yaml" }
+quarkus-smallrye-health = { module = "io.quarkus:quarkus-smallrye-health" }
+quarkus-smallrye-fault-tolerance = { module = "io.quarkus:quarkus-smallrye-fault-tolerance" }
+quarkus-security = { module = "io.quarkus:quarkus-security" }
+quarkus-arc = { module = "io.quarkus:quarkus-arc" }
+quarkus-jdbc-postgresql = { module = "io.quarkus:quarkus-jdbc-postgresql" }
+quarkus-jdbc-mariadb = { module = "io.quarkus:quarkus-jdbc-mariadb" }
+quarkus-jdbc-mysql = { module = "io.quarkus:quarkus-jdbc-mysql" }
+quarkus-jdbc-mssql = { module = "io.quarkus:quarkus-jdbc-mssql" }
+quarkus-jdbc-oracle = { module = "io.quarkus:quarkus-jdbc-oracle" }
+quarkus-flyway = { module = "io.quarkus:quarkus-flyway" }
+quarkus-flyway-postgresql = { module = "io.quarkus:quarkus-flyway-postgresql" }
+# There is no quarkus-flyway-mariadb: MariaDB is served by the MySQL Flyway module, and
+# quarkus-jdbc-mariadb (unlike the other JDBC extensions) declares no conditional Flyway
+# dependency of its own. Dropping this entry breaks MariaDB migrations only, and only at runtime.
+quarkus-flyway-mysql = { module = "io.quarkus:quarkus-flyway-mysql" }
+quarkus-flyway-mssql = { module = "io.quarkus:quarkus-flyway-mssql" }
+quarkus-flyway-oracle = { module = "io.quarkus:quarkus-flyway-oracle" }
+quarkus-scheduler = { module = "io.quarkus:quarkus-scheduler" }
+quarkus-grpc = { module = "io.quarkus:quarkus-grpc" }
+proto-google-common-protos = { module = "com.google.api.grpc:proto-google-common-protos" }
+# gRPC transport for the keychain generator, which runs without Quarkus (versions from the quarkus-bom)
+grpc-netty = { module = "io.grpc:grpc-netty" }
+grpc-protobuf = { module = "io.grpc:grpc-protobuf" }
+grpc-stub = { module = "io.grpc:grpc-stub" }
+kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json" }
+slf4j-api = { module = "org.slf4j:slf4j-api" }
+hsm-proxy-provider = { module = "de.gematik.zeta.zeta-guard:java-hsm-proxy-provider", version = "1.0.3" }
+
+# --- Kotlin / KotlinX (versions managed by the quarkus-bom platform) ---
+kotlin-stdlib-jdk8 = { module = "org.jetbrains.kotlin:kotlin-stdlib-jdk8" }
+kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core" }
+mutiny-kotlin = { module = "io.smallrye.reactive:mutiny-kotlin" }
+
+# --- BouncyCastle (versions managed by the quarkus-bom platform) ---
+bouncycastle-bcprov = { module = "org.bouncycastle:bcprov-jdk18on" }
+bouncycastle-bcpkix = { module = "org.bouncycastle:bcpkix-jdk18on" }
+
+# --- Test (Quarkus/rest-assured/Testcontainers versions managed by the quarkus-bom platform) ---
+quarkus-junit5 = { module = "io.quarkus:quarkus-junit5" }
+quarkus-jacoco = { module = "io.quarkus:quarkus-jacoco" }
+rest-assured = { module = "io.rest-assured:rest-assured" }
+rest-assured-kotlin = { module = "io.rest-assured:kotlin-extensions" }
+kotest-assertions-core = { module = "io.kotest:kotest-assertions-core", version.ref = "kotest" }
+kotest-runner-junit5 = { module = "io.kotest:kotest-runner-junit5", version.ref = "kotest" }
+wiremock = { module = "org.wiremock:wiremock", version.ref = "wiremock" }
+mockk = { module = "io.mockk:mockk", version.ref = "mockk" }
+testcontainers-postgres = { module = "org.testcontainers:testcontainers-postgresql" }
+testcontainers-mariadb = { module = "org.testcontainers:testcontainers-mariadb" }
+testcontainers-mysql = { module = "org.testcontainers:testcontainers-mysql" }
+testcontainers-mssqlserver = { module = "org.testcontainers:testcontainers-mssqlserver" }
+testcontainers-oracle = { module = "org.testcontainers:testcontainers-oracle-free" }
+# intentionally without version, so it will use the same version as the other jackson modules brought by kotlin serialization
+jackson-module-kotlin = { module = "com.fasterxml.jackson.module:jackson-module-kotlin"}
+kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test" }
+testcontainers-core = { module = "org.testcontainers:testcontainers" }
+
+[bundles]
+bouncycastle = ["bouncycastle-bcprov", "bouncycastle-bcpkix"]
+kotest = ["kotest-assertions-core", "kotest-runner-junit5"]
+
+[plugins]
+kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
+kotlin-allopen = { id = "org.jetbrains.kotlin.plugin.allopen", version.ref = "kotlin" }
+kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
+spotless = { id = "com.diffplug.spotless", version.ref = "spotless" }
+openapi-generator = { id = "org.openapi.generator", version.ref = "openapiGenerator" }
+detekt = { id = "dev.detekt", version.ref = "detekt" }
+sonarqube = { id = "org.sonarqube", version.ref = "sonarqube" }
+cyclonedx = { id = "org.cyclonedx.bom", version.ref = "cyclonedx" }

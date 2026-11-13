@@ -67,6 +67,8 @@ object TestClient {
         url: String = DEFAULT_URL,
         authenticated: Boolean = true,
         append: Boolean? = null,
+        appDisplayName: String = "Test App",
+        deviceDisplayName: String = "Test Device",
     ): ValidatableResponse {
         val spec = RestAssured.given()
         if (authenticated) spec.header(USER_INFO_HEADER, userInfo(identifier))
@@ -78,8 +80,8 @@ object TestClient {
                   "pushkey": "$pushkey",
                   "app_id": "$appId",
                   "kind": "http",
-                  "app_display_name": "Test App",
-                  "device_display_name": "Test Device",
+                  "app_display_name": "$appDisplayName",
+                  "device_display_name": "$deviceDisplayName",
                   "lang": "de",
                   "data": { "url": "$url" }
                   ${append?.let { ""","append": $it""" } ?: ""}

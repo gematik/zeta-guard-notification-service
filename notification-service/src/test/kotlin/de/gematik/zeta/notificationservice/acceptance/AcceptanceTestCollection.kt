@@ -54,7 +54,9 @@ import de.gematik.zeta.notificationservice.testsupport.TestClient.setChannelsOfD
 import de.gematik.zeta.notificationservice.testsupport.TestClient.setChannelsOfDeviceWithBody
 import de.gematik.zeta.notificationservice.testsupport.TestKeychain
 import io.restassured.RestAssured
+import org.hamcrest.Matchers.contains
 import org.hamcrest.Matchers.containsString
+import org.hamcrest.Matchers.empty
 import org.hamcrest.Matchers.equalTo
 import org.hamcrest.Matchers.not
 import org.hamcrest.Matchers.notNullValue
@@ -91,36 +93,6 @@ abstract class AcceptanceTestCollection {
     fun resetPushGateway() {
         pushGateway.wireMock().resetAll()
         pushGateway.stubDefaultSuccessPlainBatch()
-    }
-
-    // A_27154
-    @Test
-    @DisplayName("A_27154: registration without append removes the pushkey from other users")
-    fun registrationWithoutAppendRemovesPushkeyFromOtherUsers() {
-        val previous = "X271540001"
-        val current = "X271540002"
-        val pushkey = "acc-a27154-shared-device"
-        registerEnabledDevice(previous, pushkey)
-
-        registerPusher(current, pushkey)
-
-        assertEquals(emptyList<String>(), pushkeysOf(previous))
-        assertEquals(listOf(pushkey), pushkeysOf(current))
-        postNotification(previous).statusCode(404)
-    }
-
-    @Test
-    @DisplayName("A_27154: registration with append keeps the pushkey of other users")
-    fun registrationWithAppendKeepsPushkeyOfOtherUsers() {
-        val previous = "X271540003"
-        val current = "X271540004"
-        val pushkey = "acc-a27154-appended-device"
-        registerEnabledDevice(previous, pushkey)
-
-        registerPusher(current, pushkey, append = true)
-
-        assertEquals(listOf(pushkey), pushkeysOf(previous))
-        assertEquals(listOf(pushkey), pushkeysOf(current))
     }
 
     // A_29959
@@ -579,6 +551,137 @@ abstract class AcceptanceTestCollection {
 
         getNotificationHistory(identifier, pushkey, authenticated = false).statusCode(401)
         getNotificationHistory(identifier, pushkey).statusCode(200)
+    }
+
+    // A_29978
+    @Test
+    @DisplayName("A_29978: registering another user's pusher is rejected with 403 and changes nothing")
+    fun registeringAnotherUsersPusherIsRejected() {
+        val owner = "X299780001"
+        val intruder = "X299780002"
+        val pushkey = "acc-a29978-register"
+        postPusher(owner, pushkey, appDisplayName = "Owner App", deviceDisplayName = "Owner Device")
+            .statusCode(200)
+        getPushers(owner)
+            .statusCode(200)
+            .body("pushers.pushkey", contains(pushkey))
+        getPushers(intruder)
+            .statusCode(200)
+            .body("pushers", empty<Any>())
+
+        postPusher(intruder, pushkey, appDisplayName = "Intruder App", deviceDisplayName = "Intruder Device")
+            .statusCode(403)
+            .body("errorCode", equalTo(FORBIDDEN))
+            .body("errorDetail", not(containsString(pushkey)))
+
+        getPushers(owner)
+            .statusCode(200)
+            .body("pushers.app_display_name", contains("Owner App"))
+            .body("pushers.device_display_name", contains("Owner Device"))
+        getPushers(intruder).statusCode(200).body("pushers", empty<Any>())
+    }
+
+    @Test
+    @DisplayName("A_29978: registering another user's pusher with append is rejected with 403 as well")
+    fun registeringAnotherUsersPusherWithAppendIsRejected() {
+        val owner = "X299780003"
+        val intruder = "X299780004"
+        val pushkey = "acc-a29978-append"
+        registerPusher(owner, pushkey)
+
+        postPusher(intruder, pushkey, append = true)
+            .statusCode(403)
+            .body("errorCode", equalTo(FORBIDDEN))
+
+        assertEquals(listOf(pushkey), pushkeysOf(owner))
+        assertEquals(emptyList<String>(), pushkeysOf(intruder))
+    }
+
+    @Test
+    @DisplayName("A_29978: deregistering another user's pusher is rejected with 403 and keeps it")
+    fun deregisteringAnotherUsersPusherIsRejected() {
+        val owner = "X299780005"
+        val intruder = "X299780006"
+        val pushkey = "acc-a29978-deregister"
+        registerEnabledDevice(owner, pushkey)
+
+        deregisterPusher(intruder, pushkey)
+            .statusCode(403)
+            .body("errorCode", equalTo(FORBIDDEN))
+
+        assertEquals(listOf(pushkey), pushkeysOf(owner))
+        assertEquals("enabled", channelStatus(owner, pushkey))
+    }
+
+    @Test
+    @DisplayName("A_29978: reading the channel configuration of another user's pushkey is rejected with 403")
+    fun readingChannelsOfAnotherUsersPushkeyIsRejected() {
+        val owner = "X299780007"
+        val intruder = "X299780008"
+        val pushkey = "acc-a29978-channels-read"
+        registerEnabledDevice(owner, pushkey)
+
+        getChannelsOfDevice(intruder, pushkey)
+            .statusCode(403)
+            .body("errorCode", equalTo(FORBIDDEN))
+    }
+
+    @Test
+    @DisplayName("A_29978: changing the channel configuration of another user's pushkey is rejected with 403")
+    fun changingChannelsOfAnotherUsersPushkeyIsRejected() {
+        val owner = "X299780009"
+        val intruder = "X299780010"
+        val pushkey = "acc-a29978-channels-write"
+        registerEnabledDevice(owner, pushkey)
+
+        setChannelsOfDevice(intruder, pushkey, ChannelsInner.Status.disabled)
+            .statusCode(403)
+            .body("errorCode", equalTo(FORBIDDEN))
+
+        assertEquals("enabled", channelStatus(owner, pushkey))
+    }
+
+    @Test
+    @DisplayName("A_29978: reading the message history of another user's pushkey is rejected with 403")
+    fun readingHistoryOfAnotherUsersPushkeyIsRejected() {
+        val owner = "X299780011"
+        val intruder = "X299780012"
+        val pushkey = "acc-a29978-history"
+        registerEnabledDevice(owner, pushkey)
+        postNotification(owner, message = "Not for the intruder").statusCode(202)
+        pushGateway.awaitRequest(pushkey)
+
+        getNotificationHistory(intruder, pushkey)
+            .statusCode(403)
+            .body("errorCode", equalTo(FORBIDDEN))
+    }
+
+    @Test
+    @DisplayName("A_29978: a pushkey nobody holds is still answered with 404, not 403")
+    fun unknownPushkeyIsNotFoundRatherThanForbidden() {
+        val identifier = "X299780013"
+        val pushkey = "acc-a29978-unknown"
+
+        getChannelsOfDevice(identifier, pushkey)
+            .statusCode(404)
+            .body("errorCode", equalTo("PUSHER_NOT_FOUND"))
+        deregisterPusher(identifier, pushkey)
+            .statusCode(200)
+    }
+
+    @Test
+    @DisplayName("A_29978: once its owner deregistered it, the pusher can be registered by another user")
+    fun deregisteredPusherCanBeRegisteredByAnotherUser() {
+        val previous = "X299780014"
+        val next = "X299780015"
+        val pushkey = "acc-a29978-handover"
+        registerEnabledDevice(previous, pushkey)
+        deregisterPusher(previous, pushkey).statusCode(200)
+
+        registerEnabledDevice(next, pushkey)
+
+        assertEquals(emptyList<String>(), pushkeysOf(previous))
+        assertEquals(listOf(pushkey), pushkeysOf(next))
     }
 
     // A_29985
@@ -1098,9 +1201,25 @@ abstract class AcceptanceTestCollection {
             .body("errorCode", equalTo("INVALID_PARAM"))
     }
 
+    @Test
+    @DisplayName("A_29992: an empty idempotency key is rejected rather than treated as absent")
+    fun anEmptyIdempotencyKeyIsRejected() {
+        val identifier = "X299920009"
+        // Registering the device first: without it a 400 could just as well come from an unknown user.
+        registerEnabledDevice(identifier, "acc-a29992-empty")
+
+        // The header is optional, but when present the RS contract requires at least one character.
+        postNotification(identifier, idempotencyKey = "")
+            .statusCode(400)
+            .body("errorCode", equalTo("INVALID_PARAM"))
+    }
+
     private companion object {
         /** A second channel from the `%test` registry, for the channel-scoping scenario. */
         const val OTHER_CHANNEL = "channel1"
+
+        /** The error code of an operation on another user's pusher (A_29978). */
+        const val FORBIDDEN = "M_FORBIDDEN"
 
         /** HMAC-SHA256 hex, as `HmacPseudonymizer` produces it. */
         val PSEUDONYMIZED_ID = Regex("[0-9a-f]{64}")

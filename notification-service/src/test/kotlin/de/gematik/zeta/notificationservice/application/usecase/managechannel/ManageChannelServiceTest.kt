@@ -27,12 +27,15 @@ import de.gematik.zeta.notificationservice.adapter.outbound.persistence.InMemory
 import de.gematik.zeta.notificationservice.application.port.outbound.StorageRecord
 import de.gematik.zeta.notificationservice.application.port.outbound.StorageRecordDAO
 import de.gematik.zeta.notificationservice.application.repository.DefaultPushersRepository
+import de.gematik.zeta.notificationservice.application.repository.DefaultPushkeyHoldersRepository
 import de.gematik.zeta.notificationservice.application.repository.PushersRepository
+import de.gematik.zeta.notificationservice.application.repository.PushkeyHoldersRepository
 import de.gematik.zeta.notificationservice.application.repository.encryption.NoOpPayloadSealer
 import de.gematik.zeta.notificationservice.application.repository.pseudonymization.NoOpPseudonymizer
 import de.gematik.zeta.notificationservice.domain.error.ChannelNotAllowedException
 import de.gematik.zeta.notificationservice.domain.error.InvalidChannelException
 import de.gematik.zeta.notificationservice.domain.error.PusherNotFoundException
+import de.gematik.zeta.notificationservice.domain.error.PusherOfOtherUserException
 import de.gematik.zeta.notificationservice.domain.model.ChannelConfiguration
 import de.gematik.zeta.notificationservice.domain.model.ChannelId
 import de.gematik.zeta.notificationservice.domain.model.ChannelRegistry
@@ -41,6 +44,7 @@ import de.gematik.zeta.notificationservice.domain.model.Pusher
 import de.gematik.zeta.notificationservice.domain.model.PusherData
 import de.gematik.zeta.notificationservice.domain.model.PusherId
 import de.gematik.zeta.notificationservice.domain.model.PushersCollection
+import de.gematik.zeta.notificationservice.domain.model.PushkeyHolders
 import de.gematik.zeta.notificationservice.domain.model.UserId
 import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.DescribeSpec
@@ -52,6 +56,7 @@ import kotlin.time.Duration
 class ManageChannelServiceTest :
     DescribeSpec({
         val userId = UserId.parse("X110411675")
+        val otherUserId = UserId.parse("X110411676")
         val first = ChannelId.parse("channel1")
         val second = ChannelId.parse("channel2")
         val unregistered = ChannelId.parse("channel3")
@@ -73,16 +78,61 @@ class ManageChannelServiceTest :
                 data = PusherData(url = "https://push.example/gateway"),
             )
 
+        fun holdersRepository(): PushkeyHoldersRepository =
+            DefaultPushkeyHoldersRepository(
+                storageRecords = InMemoryStorageRecordDAO(),
+                pseudonymizer = NoOpPseudonymizer(),
+                payloadSealer = NoOpPayloadSealer(),
+            )
+
         fun serviceWith(
             repository: PushersRepository,
             vararg pushKeys: String,
+            holders: PushkeyHoldersRepository = holdersRepository(),
         ): ManageChannelUseCase {
             pushKeys.forEach { pushKey ->
                 repository.update(userId) { collection ->
                     collection?.register(httpPusher(pushKey)) ?: PushersCollection.create(userId, httpPusher(pushKey))
                 }
+                holders.updateHolders(pushKey) { it?.add(userId) ?: PushkeyHolders.create(pushKey, userId) }
             }
-            return ManageChannelService(repository, ChannelRegistry.of(listOf("channel1", "channel2")))
+            return ManageChannelService(repository, holders, ChannelRegistry.of(listOf("channel1", "channel2")))
+        }
+
+        describe("pushkeys of other users (A_29978)") {
+            fun serviceWithForeignKey(): ManageChannelUseCase {
+                val holders = holdersRepository()
+                holders.updateHolders("key-foreign") { PushkeyHolders.create("key-foreign", otherUserId) }
+                return serviceWith(repository(), "key-1", holders = holders)
+            }
+
+            it("rejects reading the configuration of a pushkey another user holds") {
+                shouldThrow<PusherOfOtherUserException> {
+                    serviceWithForeignKey().channelsOfDevice(
+                        userId,
+                        "key-foreign",
+                    )
+                }
+            }
+
+            it("rejects changing the configuration of a pushkey another user holds") {
+                shouldThrow<PusherOfOtherUserException> {
+                    serviceWithForeignKey().configure(
+                        userId,
+                        "key-foreign",
+                        listOf(ChannelConfiguration(first, ChannelStatus.ENABLED)),
+                    )
+                }
+            }
+
+            it("rejects it for a user without any device as well") {
+                val holders = holdersRepository()
+                holders.updateHolders("key-foreign") { PushkeyHolders.create("key-foreign", otherUserId) }
+
+                shouldThrow<PusherOfOtherUserException> {
+                    serviceWith(repository(), holders = holders).channelsOfDevice(userId, "key-foreign")
+                }
+            }
         }
 
         describe("availableChannels") {
@@ -126,7 +176,8 @@ class ManageChannelServiceTest :
                 val repository = repository()
                 val service = serviceWith(repository, "key-1")
                 service.configure(userId, "key-1", listOf(ChannelConfiguration(second, ChannelStatus.ENABLED)))
-                val shrunk = ManageChannelService(repository, ChannelRegistry.of(listOf("channel1")))
+                val shrunk =
+                    ManageChannelService(repository, holdersRepository(), ChannelRegistry.of(listOf("channel1")))
 
                 shrunk.channelsOfDevice(userId, "key-1") shouldBe mapOf(first to ChannelStatus.NOT_SET)
                 repository

@@ -346,7 +346,10 @@ class JdbcStorageRecordDAO(
          */
         const val MAX_ID_LENGTH = 450
 
-        /** Cannot collide: every real id ends in _pushers, _owners, _notification, _history or _idempotency. */
+        /**
+         * Cannot collide: every real id ends in _pushers, _owners, _holders, _notification, _history or
+         * _idempotency.
+         */
         const val PURGE_LEASE_ID = "__purge_lease"
         const val PURGE_LEASE_PAYLOAD = "purge-lease"
 

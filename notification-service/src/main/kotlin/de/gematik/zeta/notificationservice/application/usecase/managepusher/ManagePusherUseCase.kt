@@ -33,14 +33,15 @@ interface ManagePusherUseCase {
     fun get(userId: UserId): List<Pusher>
 
     /**
-     * Registers [pusher] for [userId]. Unless [Pusher.append] is set, every other user's registration of the same
-     * app ID and pushkey is removed, as `POST /pushers/set` requires for its default `append: false`.
+     * Registers [pusher] for [userId], or throws a `PusherOfOtherUserException` if another user holds the same app
+     * ID and pushkey (A_29978), whatever [Pusher.append] says.
      */
     fun register(
         userId: UserId,
         pusher: Pusher,
     )
 
+    /** Deregisters a pusher; throws a `PusherOfOtherUserException` if another user holds it (A_29978). */
     fun remove(
         userId: UserId,
         pusherId: PusherId,

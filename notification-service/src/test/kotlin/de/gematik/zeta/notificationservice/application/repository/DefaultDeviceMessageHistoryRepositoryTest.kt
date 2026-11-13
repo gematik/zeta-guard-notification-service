@@ -33,17 +33,25 @@ import de.gematik.zeta.notificationservice.domain.model.HistoryMessage
 import de.gematik.zeta.notificationservice.domain.model.NotificationId
 import de.gematik.zeta.notificationservice.domain.model.UserId
 import de.gematik.zeta.notificationservice.testsupport.FixedClock
+import de.gematik.zeta.notificationservice.testsupport.historyLogicalId
+import de.gematik.zeta.notificationservice.testsupport.legacyHistoryLogicalId
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.collections.shouldContainExactly
 import io.kotest.matchers.collections.shouldHaveSize
+import io.kotest.matchers.ints.shouldBeLessThanOrEqual
 import io.kotest.matchers.nulls.shouldBeNull
 import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.addJsonObject
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonArray
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.days
+import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Instant
 
 class DefaultDeviceMessageHistoryRepositoryTest :
@@ -51,7 +59,8 @@ class DefaultDeviceMessageHistoryRepositoryTest :
         val userId = UserId.parse("X110411675")
         val otherUserId = UserId.parse("X110411676")
         val pushKey = "key-1"
-        val logicalId = "kvnr:${userId.value}/$pushKey" + "_history"
+        val logicalId = historyLogicalId(userId, pushKey)
+        val legacyId = legacyHistoryLogicalId(userId, pushKey)
         val sentAt = Instant.parse("2026-08-05T10:15:30Z")
 
         fun storageRecords() = InMemoryStorageRecordDAO()
@@ -67,17 +76,42 @@ class DefaultDeviceMessageHistoryRepositoryTest :
         fun seed(
             storageRecords: InMemoryStorageRecordDAO,
             payload: String,
+            id: String = logicalId,
+            ttl: Duration? = null,
         ) = storageRecords.save(
-            logicalId,
-            StorageRecord(id = logicalId, payload = payload, keychainId = ""),
+            id,
+            StorageRecord(id = id, payload = payload, keychainId = ""),
             expectedTransVerifier = null,
+            ttl = ttl,
         )
 
-        fun message(text: String): HistoryMessage =
+        fun payloadOf(
+            id: String,
+            vararg messages: HistoryMessage,
+        ): String =
+            buildJsonObject {
+                put("userId", userId.value)
+                put("pushKey", pushKey)
+                putJsonArray("messages") {
+                    messages.forEach { message ->
+                        addJsonObject {
+                            put("notificationId", message.notificationId.toString())
+                            put("sentAt", message.sentAt.toString())
+                            put("payload", message.payload)
+                        }
+                    }
+                }
+                put("_lid", id)
+            }.toString()
+
+        fun message(
+            text: String,
+            at: Instant = sentAt,
+        ): HistoryMessage =
             HistoryMessage(
                 notificationId = NotificationId.random(),
                 payload = Json.decodeFromString<JsonObject>("""{"message":"$text"}"""),
-                sentAt = sentAt,
+                sentAt = at,
             )
 
         describe("append and findBy") {
@@ -130,6 +164,125 @@ class DefaultDeviceMessageHistoryRepositoryTest :
                 val loaded = repository.findBy(userId, pushKey).shouldNotBeNull()
                 loaded.messages shouldHaveSize DeviceMessageHistory.MAX_MESSAGES
                 loaded.messages shouldContainExactly messages.drop(1)
+            }
+        }
+
+        describe("storage id") {
+            it("stays within the id column for the longest pushkey the API allows") {
+                val raw = storageRecords()
+                val writtenIds = mutableListOf<String>()
+                val recording =
+                    object : StorageRecordDAO by raw {
+                        override fun save(
+                            recordId: String,
+                            payload: StorageRecord,
+                            expectedTransVerifier: Int?,
+                            ttl: Duration?,
+                        ) {
+                            writtenIds += recordId
+                            raw.save(recordId, payload, expectedTransVerifier, ttl)
+                        }
+                    }
+                val longPushKey = "k".repeat(512)
+                val first = message("one")
+
+                repository(recording).append(userId, longPushKey, first)
+
+                writtenIds.single().length shouldBeLessThanOrEqual 450
+                repository(raw).findBy(userId, longPushKey).shouldNotBeNull().messages shouldContainExactly
+                    listOf(first)
+            }
+        }
+
+        describe("legacy id") {
+            it("reads a history still stored under the legacy id") {
+                val storageRecords = storageRecords()
+                val old = message("old")
+                seed(storageRecords, payloadOf(legacyId, old), id = legacyId)
+
+                repository(storageRecords).findBy(userId, pushKey).shouldNotBeNull().messages shouldContainExactly
+                    listOf(old)
+            }
+
+            it("moves it to the hashed id on the next append") {
+                val storageRecords = storageRecords()
+                val old = message("old")
+                seed(storageRecords, payloadOf(legacyId, old), id = legacyId, ttl = 30.days)
+                val new = message("new")
+
+                repository(storageRecords).append(userId, pushKey, new)
+
+                storageRecords.findById(legacyId).shouldBeNull()
+                val moved = storageRecords.findById(logicalId).shouldNotBeNull()
+                logicalIdOf(moved.payload) shouldBe logicalId
+                repository(storageRecords).findBy(userId, pushKey).shouldNotBeNull().messages shouldContainExactly
+                    listOf(old, new)
+            }
+
+            it("keeps the retention deadline of the moved record") {
+                val clock = FixedClock()
+                val storageRecords = InMemoryStorageRecordDAO(clock)
+                seed(storageRecords, payloadOf(legacyId, message("old")), id = legacyId, ttl = 30.days)
+                clock.advanceBy(29.days)
+
+                repository(storageRecords).append(userId, pushKey, message("new"))
+                clock.advanceBy(1.days)
+
+                repository(storageRecords).findBy(userId, pushKey).shouldBeNull()
+            }
+
+            it("merges both records when an old instance recreated the legacy one, without writing the merge back") {
+                val storageRecords = storageRecords()
+                val first = message("first", sentAt)
+                val second = message("second", sentAt + 1.minutes)
+                val third = message("third", sentAt + 2.minutes)
+                seed(storageRecords, payloadOf(logicalId, first, third), ttl = 30.days)
+                seed(storageRecords, payloadOf(legacyId, second), id = legacyId, ttl = 30.days)
+                val fourth = message("fourth", sentAt + 3.minutes)
+
+                repository(storageRecords).append(userId, pushKey, fourth)
+
+                repository(storageRecords).findBy(userId, pushKey).shouldNotBeNull().messages shouldContainExactly
+                    listOf(first, second, third, fourth)
+                storageRecords.findById(legacyId).shouldNotBeNull().payload shouldBe payloadOf(legacyId, second)
+            }
+
+            it("caps the merged history") {
+                val storageRecords = storageRecords()
+                val messages = (1..DeviceMessageHistory.MAX_MESSAGES + 1).map { message("m$it", sentAt + it.minutes) }
+                seed(storageRecords, payloadOf(legacyId, *messages.take(2).toTypedArray()), id = legacyId)
+                seed(storageRecords, payloadOf(logicalId, *messages.drop(2).toTypedArray()))
+
+                repository(storageRecords).findBy(userId, pushKey).shouldNotBeNull().messages shouldContainExactly
+                    messages.drop(1)
+            }
+
+            it("deletes the history under both ids") {
+                val storageRecords = storageRecords()
+                seed(storageRecords, payloadOf(legacyId, message("old")), id = legacyId)
+                seed(storageRecords, payloadOf(logicalId, message("new")))
+
+                repository(storageRecords).delete(userId, pushKey)
+
+                storageRecords.findById(legacyId).shouldBeNull()
+                storageRecords.findById(logicalId).shouldBeNull()
+            }
+
+            it("loses no message when appends race the move") {
+                val storageRecords = storageRecords()
+                seed(storageRecords, payloadOf(legacyId, message("old")), id = legacyId)
+                val repository = repository(storageRecords)
+                val appendsPerThread = 20
+                val threads =
+                    List(2) {
+                        Thread.ofPlatform().start {
+                            repeat(appendsPerThread) { repository.append(userId, pushKey, message("m")) }
+                        }
+                    }
+                threads.forEach { it.join() }
+
+                storageRecords.findById(legacyId).shouldBeNull()
+                repository.findBy(userId, pushKey).shouldNotBeNull().messages shouldHaveSize 2 * appendsPerThread + 1
             }
         }
 

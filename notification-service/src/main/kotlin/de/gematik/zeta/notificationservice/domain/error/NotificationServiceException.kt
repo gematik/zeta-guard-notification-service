@@ -60,15 +60,20 @@ class ChannelNotAllowedException(
 ) : NotificationServiceException("Channel '$channelId' is not configured on this instance")
 
 /**
- * The authenticated user has no device registered for the requested pushkey. Mapped to 404, which is
- * also the answer for a pushkey belonging to another user: records are reachable only per user, so the
- * two are indistinguishable, and reporting them differently would make the endpoint an oracle for
- * probing arbitrary device tokens (A_29978).
+ * No user has a device registered for the requested pushkey. Mapped to 404; a pushkey that another user holds is
+ * a [PusherOfOtherUserException] instead.
  *
  * The message deliberately omits the pushkey: it is the APNs/FCM device token, and messages are echoed
  * into `errorDetail` and logs.
  */
 class PusherNotFoundException : NotificationServiceException("No device is registered for the authenticated user")
+
+/**
+ * The operation addresses a pusher, or a pushkey, that another user holds. A_29978 binds every operation of the
+ * client module to the authenticated user and requires those on other users' pushers to be rejected with 403.
+ * Like [PusherNotFoundException], the message omits the pushkey and names no user.
+ */
+class PusherOfOtherUserException : NotificationServiceException("The pusher is registered for another user")
 
 /**
  * No notification with the requested id is readable for the authenticated user. Same reasoning as

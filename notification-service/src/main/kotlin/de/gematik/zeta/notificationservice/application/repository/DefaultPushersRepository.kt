@@ -56,7 +56,7 @@ class DefaultPushersRepository(
         userId: UserId,
         transform: (PushersCollection?) -> PushersCollection?,
     ) {
-        update(logicalId(userId), transform)
+        update(logicalId(userId), transform = transform)
     }
 
     override fun markedForRemoval(aggregate: PushersCollection): Boolean = aggregate.markedForRemoval()

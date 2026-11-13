@@ -38,6 +38,8 @@ import de.gematik.zeta.notificationservice.testsupport.TestKeychain
 import de.gematik.zeta.notificationservice.testsupport.TestKeychain.BEFORE_V2
 import de.gematik.zeta.notificationservice.testsupport.TestKeychain.V1
 import de.gematik.zeta.notificationservice.testsupport.TestKeychain.V2
+import de.gematik.zeta.notificationservice.testsupport.historyLogicalId
+import de.gematik.zeta.notificationservice.testsupport.legacyHistoryLogicalId
 import de.gematik.zeta.notificationservice.testsupport.storageIdOf
 import io.kotest.core.spec.style.DescribeSpec
 import io.kotest.matchers.collections.shouldContainExactly
@@ -56,7 +58,7 @@ class KeychainEntriesRepositoryTest :
         val userId = UserId.parse("X110411675")
         val otherUserId = UserId.parse("X110411676")
         val pushKey = "key-1"
-        val historyId = "kvnr:${userId.value}/$pushKey" + "_history"
+        val historyId = historyLogicalId(userId, pushKey)
         val pusherId = PusherId(appId = "app.one", pushKey = "key-1")
 
         // The first entry takes the writes: before V2's activeFrom when that is V1.
@@ -145,6 +147,30 @@ class KeychainEntriesRepositoryTest :
 
             records.findById(pseudonymizer(V1).storageIdOf(historyId)).shouldBeNull()
             records.findById(pseudonymizer(V2).storageIdOf(historyId)).shouldBeNull()
+        }
+
+        it("moves a history under the legacy id to the hashed id within the entry it lies under") {
+            val records = InMemoryStorageRecordDAO()
+            val legacyId = legacyHistoryLogicalId(userId, pushKey)
+            val legacyStorageId = pseudonymizer(V1).storageIdOf(legacyId)
+            records.save(
+                legacyStorageId,
+                StorageRecord(
+                    id = legacyStorageId,
+                    payload = """{"userId":"${userId.value}","pushKey":"$pushKey","messages":[],"_lid":"$legacyId"}""",
+                    keychainId = V1,
+                ),
+                expectedTransVerifier = null,
+                ttl = 30.days,
+            )
+
+            history(records, V2, V1).append(userId, pushKey, message("one"))
+
+            records.findById(legacyStorageId).shouldBeNull()
+            // NoOpPayloadSealer writes no keychain id, so the storage id is what shows the entry it stayed under.
+            records.findById(pseudonymizer(V1).storageIdOf(historyId)).shouldNotBeNull()
+            records.findById(pseudonymizer(V2).storageIdOf(historyId)).shouldBeNull()
+            history(records, V2, V1).texts() shouldContainExactly listOf("one")
         }
 
         it("lands an update that races a move on the moved record") {

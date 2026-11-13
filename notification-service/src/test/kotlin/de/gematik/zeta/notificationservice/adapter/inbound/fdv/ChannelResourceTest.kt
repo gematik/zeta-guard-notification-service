@@ -25,6 +25,7 @@ package de.gematik.zeta.notificationservice.adapter.inbound.fdv
 
 import de.gematik.zeta.notificationservice.integration.quarkusResources.WithDatabase
 import de.gematik.zeta.notificationservice.testsupport.TestClient.channelsOf
+import de.gematik.zeta.notificationservice.testsupport.TestClient.deregisterPusher
 import de.gematik.zeta.notificationservice.testsupport.TestClient.getAvailableChannels
 import de.gematik.zeta.notificationservice.testsupport.TestClient.getChannelsOfDevice
 import de.gematik.zeta.notificationservice.testsupport.TestClient.registerPusher
@@ -330,39 +331,40 @@ class ChannelResourceTest {
     }
 
     @Test
-    fun getChannelsOfDevice_forPushkeyOfAnotherUser_returns404() {
+    fun getChannelsOfDevice_forPushkeyOfAnotherUser_returns403() {
         val owner = "X110411026"
         val other = "X110411027"
         registerPusher(owner, "key-owner-read")
 
         getChannelsOfDevice(other, "key-owner-read")
-            .statusCode(404)
-            .body("errorCode", equalTo("PUSHER_NOT_FOUND"))
+            .statusCode(403)
+            .body("errorCode", equalTo("M_FORBIDDEN"))
     }
 
     @Test
-    fun postChannelsOfDevice_forPushkeyOfAnotherUser_returns404AndLeavesItUnchanged() {
+    fun postChannelsOfDevice_forPushkeyOfAnotherUser_returns403AndLeavesItUnchanged() {
         val owner = "X110411028"
         val other = "X110411029"
         registerPusher(owner, "key-owner-write")
         setChannelsOfDeviceWithBody(owner, "key-owner-write", channelsBody("channel1" to "enabled")).statusCode(200)
 
-        setChannelsOfDeviceWithBody(other, "key-owner-write", channelsBody("channel1" to "disabled")).statusCode(404)
+        setChannelsOfDeviceWithBody(other, "key-owner-write", channelsBody("channel1" to "disabled"))
+            .statusCode(403)
+            .body("errorCode", equalTo("M_FORBIDDEN"))
 
         assertEquals("enabled", channelsOf(owner, "key-owner-write")["channel1"])
     }
 
     @Test
-    fun getChannelsOfDevice_sameKeyRegisteredByTwoUsers_returnsEachUsersOwnConfiguration() {
-        val firstUser = "X110411030"
-        val secondUser = "X110411031"
-        registerPusher(firstUser, "key-shared")
-        registerPusher(secondUser, "key-shared", append = true)
-        setChannelsOfDeviceWithBody(firstUser, "key-shared", channelsBody("channel1" to "enabled")).statusCode(200)
-        setChannelsOfDeviceWithBody(secondUser, "key-shared", channelsBody("channel1" to "disabled")).statusCode(200)
+    fun getChannelsOfDevice_forPushkeyItsOwnerDeregistered_returns404() {
+        val owner = "X110411030"
+        val other = "X110411031"
+        registerPusher(owner, "key-released")
+        deregisterPusher(owner, "key-released").statusCode(200)
 
-        assertEquals("enabled", channelsOf(firstUser, "key-shared")["channel1"])
-        assertEquals("disabled", channelsOf(secondUser, "key-shared")["channel1"])
+        getChannelsOfDevice(other, "key-released")
+            .statusCode(404)
+            .body("errorCode", equalTo("PUSHER_NOT_FOUND"))
     }
 
     @Test

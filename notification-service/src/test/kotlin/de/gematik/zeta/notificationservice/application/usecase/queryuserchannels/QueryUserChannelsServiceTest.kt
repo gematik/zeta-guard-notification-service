@@ -25,6 +25,7 @@ package de.gematik.zeta.notificationservice.application.usecase.queryuserchannel
 
 import de.gematik.zeta.notificationservice.adapter.outbound.persistence.InMemoryStorageRecordDAO
 import de.gematik.zeta.notificationservice.application.repository.DefaultPushersRepository
+import de.gematik.zeta.notificationservice.application.repository.DefaultPushkeyHoldersRepository
 import de.gematik.zeta.notificationservice.application.repository.PushersRepository
 import de.gematik.zeta.notificationservice.application.repository.encryption.NoOpPayloadSealer
 import de.gematik.zeta.notificationservice.application.repository.pseudonymization.NoOpPseudonymizer
@@ -82,8 +83,11 @@ class QueryUserChannelsServiceTest :
             pushKey: String,
             status: ChannelStatus,
             channelId: ChannelId = first,
-        ) = ManageChannelService(repository, registry())
-            .configure(userId, pushKey, listOf(ChannelConfiguration(channelId, status)))
+        ) = ManageChannelService(
+            repository,
+            DefaultPushkeyHoldersRepository(InMemoryStorageRecordDAO(), NoOpPseudonymizer(), NoOpPayloadSealer()),
+            registry(),
+        ).configure(userId, pushKey, listOf(ChannelConfiguration(channelId, status)))
 
         fun service(repository: PushersRepository): QueryUserChannelsUseCase =
             QueryUserChannelsService(repository, registry())

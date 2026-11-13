@@ -287,29 +287,24 @@ class PusherResourceTest {
         getPushers("X110412019").statusCode(200).body("pushers.size()", equalTo(0))
     }
 
-    /**
-     * The ticket asked for `403` on foreign access. There is no reachable code path for it: the user is taken only
-     * from the `zeta-user-info` header, never from a request parameter, and a record is addressed by a logical id
-     * derived from that user. The FDV contract declares no `403` on the pusher paths either.
-     *
-     * Reporting "exists, but not yours" differently from "does not exist" would also make the endpoint an oracle for
-     * probing arbitrary APNs/FCM device tokens (`A_29978`). So the object binding is proven by isolation instead: a
-     * foreign deregistration is a no-op that leaves the owner's data untouched and reveals nothing.
-     */
+    // --- Pushers of other users (A_29978) ---
+
     @Test
-    fun postPusher_withKindNull_forOtherUsersPusher_leavesOwnersPusherIntact() {
+    fun postPusher_withKindNull_forOtherUsersPusher_returns403AndLeavesOwnersPusherIntact() {
         val owner = "X110412020"
         val attacker = "X110412021"
         postPusherWithBody(owner, pusherBody(pushkey = "tok-protected")).statusCode(200)
 
-        postPusherWithBody(attacker, deletionBody(pushkey = "tok-protected")).statusCode(200)
+        postPusherWithBody(attacker, deletionBody(pushkey = "tok-protected"))
+            .statusCode(403)
+            .body("errorCode", equalTo("M_FORBIDDEN"))
 
         assertEquals(listOf("tok-protected"), pushkeysOf(owner))
     }
 
     @Test
-    fun postPusher_forUnknownPusherOfKnownUser_isIndistinguishableFromUnknownUser() {
-        // Both answer 200: a differential response would leak whether a KVNR has any pushers at all (A_29978).
+    fun postPusher_withKindNull_forPusherNobodyHolds_returns200() {
+        // Deregistration is idempotent: a pusher nobody holds is already in the desired end state.
         val known = "X110412022"
         postPusherWithBody(known, pusherBody(pushkey = "tok-known")).statusCode(200)
 
@@ -318,26 +313,43 @@ class PusherResourceTest {
     }
 
     @Test
-    fun postPusher_sameAppIdAndPushkeyForTwoUsers_withoutAppend_keepsOnlyLatestUser() {
-        // The contract's default `append: false` asks the FD to drop other users' pushers sharing app_id+pushkey.
+    fun postPusher_sameAppIdAndPushkeyForTwoUsers_withoutAppend_returns403AndKeepsTheFirstUser() {
         val first = "X110412024"
         val second = "X110412025"
         postPusherWithBody(first, pusherBody(pushkey = "tok-collision")).statusCode(200)
-        postPusherWithBody(second, pusherBody(pushkey = "tok-collision")).statusCode(200)
 
-        assertEquals(emptyList<String>(), pushkeysOf(first))
-        assertEquals(listOf("tok-collision"), pushkeysOf(second))
+        postPusherWithBody(second, pusherBody(pushkey = "tok-collision"))
+            .statusCode(403)
+            .body("errorCode", equalTo("M_FORBIDDEN"))
+            .body("errorDetail", not(containsString("tok-collision")))
+
+        assertEquals(listOf("tok-collision"), pushkeysOf(first))
+        assertEquals(emptyList<String>(), pushkeysOf(second))
     }
 
     @Test
-    fun postPusher_sameAppIdAndPushkeyForTwoUsers_withAppendTrue_keepsBothRegistrations() {
+    fun postPusher_sameAppIdAndPushkeyForTwoUsers_withAppendTrue_returns403() {
         val first = "X110412030"
         val second = "X110412031"
         postPusherWithBody(first, pusherBody(pushkey = "tok-shared-device")).statusCode(200)
-        postPusherWithBody(second, pusherBody(pushkey = "tok-shared-device", append = true)).statusCode(200)
+
+        postPusherWithBody(second, pusherBody(pushkey = "tok-shared-device", append = true)).statusCode(403)
 
         assertEquals(listOf("tok-shared-device"), pushkeysOf(first))
-        assertEquals(listOf("tok-shared-device"), pushkeysOf(second))
+        assertEquals(emptyList<String>(), pushkeysOf(second))
+    }
+
+    @Test
+    fun postPusher_samePushkeyUnderAnotherAppIdForTwoUsers_keepsBothRegistrations() {
+        // A pusher is identified by app ID and pushkey together, so this is a different pusher.
+        val first = "X110412034"
+        val second = "X110412035"
+        postPusherWithBody(first, pusherBody(pushkey = "tok-two-apps", appId = "de.gematik.zeta.one")).statusCode(200)
+
+        postPusherWithBody(second, pusherBody(pushkey = "tok-two-apps", appId = "de.gematik.zeta.two")).statusCode(200)
+
+        assertEquals(listOf("tok-two-apps"), pushkeysOf(first))
+        assertEquals(listOf("tok-two-apps"), pushkeysOf(second))
     }
 
     // --- Deregistration (A_29989) ---

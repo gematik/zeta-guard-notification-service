@@ -463,5 +463,14 @@ class SubmitNotificationServiceTest :
                     fixture.service.submit(fixture.command(key = "k".repeat(IdempotencyKey.MAX_KEY_LENGTH + 1)))
                 }
             }
+
+            it("rejects an empty key instead of treating it as absent") {
+                val fixture = Fixture()
+                fixture.register(httpPusher("key-1"))
+
+                shouldThrow<IllegalArgumentException> {
+                    fixture.service.submit(fixture.command(key = ""))
+                }
+            }
         }
     })

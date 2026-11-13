@@ -332,6 +332,16 @@ abstract class StorageRecordDAOContractTestCollection {
         }
     }
 
+    // The device history still looks up and deletes its legacy id, which with sealing off is longer than the
+    // column for a long pushkey. That must find nothing rather than fail.
+    @Test
+    fun `finds and deletes nothing under an id the column cannot hold`() {
+        val tooLong = "x".repeat(600)
+
+        dao.findById(tooLong).shouldBeNull()
+        shouldNotThrow<SQLException> { dao.delete(tooLong) }
+    }
+
     @Test
     fun `purges again on the next cycle because the lease is released`() {
         dao.save(recordId, record(), expectedTransVerifier = null, ttl = 24.hours)

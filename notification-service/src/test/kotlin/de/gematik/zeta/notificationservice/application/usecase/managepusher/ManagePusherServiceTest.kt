@@ -28,12 +28,14 @@ import de.gematik.zeta.notificationservice.application.port.outbound.StorageReco
 import de.gematik.zeta.notificationservice.application.port.outbound.StorageRecordDAO
 import de.gematik.zeta.notificationservice.application.repository.DefaultDeviceMessageHistoryRepository
 import de.gematik.zeta.notificationservice.application.repository.DefaultPushersRepository
+import de.gematik.zeta.notificationservice.application.repository.DefaultPushkeyHoldersRepository
 import de.gematik.zeta.notificationservice.application.repository.DefaultPushkeyOwnersRepository
 import de.gematik.zeta.notificationservice.application.repository.PushersRepository
 import de.gematik.zeta.notificationservice.application.repository.encryption.NoOpPayloadSealer
 import de.gematik.zeta.notificationservice.application.repository.pseudonymization.NoOpPseudonymizer
 import de.gematik.zeta.notificationservice.domain.error.InvalidPusherException
 import de.gematik.zeta.notificationservice.domain.error.MissingPusherFieldsException
+import de.gematik.zeta.notificationservice.domain.error.PusherOfOtherUserException
 import de.gematik.zeta.notificationservice.domain.model.HistoryMessage
 import de.gematik.zeta.notificationservice.domain.model.NotificationId
 import de.gematik.zeta.notificationservice.domain.model.Pusher
@@ -90,6 +92,13 @@ class ManagePusherServiceTest :
                 payloadSealer = NoOpPayloadSealer(),
             )
 
+        fun holdersRepository(storageRecords: StorageRecordDAO) =
+            DefaultPushkeyHoldersRepository(
+                storageRecords = storageRecords,
+                pseudonymizer = NoOpPseudonymizer(),
+                payloadSealer = NoOpPayloadSealer(),
+            )
+
         fun historyRepository(storageRecords: StorageRecordDAO) =
             DefaultDeviceMessageHistoryRepository(
                 storageRecords = storageRecords,
@@ -112,6 +121,7 @@ class ManagePusherServiceTest :
                 payloadSealer = NoOpPayloadSealer(),
             ),
             ownersRepository(storageRecords),
+            holdersRepository(storageRecords),
             historyRepository(storageRecords),
             FixedClock(),
             encryptionEnabled,
@@ -283,58 +293,82 @@ class ManagePusherServiceTest :
             }
         }
 
-        describe("append") {
-            it("removes the pusher from every other user unless append is set") {
+        describe("pushers of other users (A_29978)") {
+            it("rejects registering another user's pusher and leaves both users' pushers as they were") {
+                val (_, service) = wiring()
+                service.register(otherUserId, httpPusher(pushKey = "key-shared", deviceDisplayName = "Owner"))
+
+                shouldThrow<PusherOfOtherUserException> {
+                    service.register(userId, httpPusher(pushKey = "key-shared", deviceDisplayName = "Intruder"))
+                }
+
+                service.get(otherUserId).single().deviceDisplayName shouldBe "Owner"
+                service.get(userId).shouldBeEmpty()
+            }
+
+            it("rejects it when append is set as well") {
                 val (_, service) = wiring()
                 service.register(otherUserId, httpPusher(pushKey = "key-shared"))
 
-                service.register(userId, httpPusher(pushKey = "key-shared"))
+                shouldThrow<PusherOfOtherUserException> {
+                    service.register(userId, httpPusher(pushKey = "key-shared", append = true))
+                }
 
-                service.get(otherUserId).shouldBeEmpty()
-                service.get(userId).map { it.pusherId.pushKey } shouldContainExactly listOf("key-shared")
+                service.get(otherUserId) shouldHaveSize 1
+                service.get(userId).shouldBeEmpty()
             }
 
-            it("deletes the message history of the users the pusher is taken from (A_29989)") {
+            it("keeps the message history of the owner when the registration is rejected (A_29989)") {
                 val (storageRecords, service) = wiring()
                 val history = historyRepository(storageRecords)
                 service.register(otherUserId, httpPusher(pushKey = "key-shared"))
                 history.append(otherUserId, "key-shared", historyMessage())
 
-                service.register(userId, httpPusher(pushKey = "key-shared"))
-
-                history.findBy(otherUserId, "key-shared").shouldBeNull()
-            }
-
-            it("keeps the message history of a user who still holds the pushkey under another app ID (A_29989)") {
-                val (storageRecords, service) = wiring()
-                val history = historyRepository(storageRecords)
-                service.register(otherUserId, httpPusher(pushKey = "key-shared", appId = "app.one"))
-                service.register(otherUserId, httpPusher(pushKey = "key-shared", appId = "app.two"))
-                history.append(otherUserId, "key-shared", historyMessage())
-
-                service.register(userId, httpPusher(pushKey = "key-shared", appId = "app.one"))
+                shouldThrow<PusherOfOtherUserException> { service.register(userId, httpPusher(pushKey = "key-shared")) }
 
                 history.findBy(otherUserId, "key-shared").shouldNotBeNull()
             }
 
-            it("keeps the other users' registrations when append is set") {
+            it("treats the same pushkey under another app ID as a different pusher") {
                 val (_, service) = wiring()
-                service.register(otherUserId, httpPusher(pushKey = "key-shared"))
+                service.register(otherUserId, httpPusher(pushKey = "key-shared", appId = "app.two"))
 
-                service.register(userId, httpPusher(pushKey = "key-shared", append = true))
+                service.register(userId, httpPusher(pushKey = "key-shared", appId = "app.one"))
 
                 service.get(otherUserId) shouldHaveSize 1
                 service.get(userId) shouldHaveSize 1
             }
 
-            it("leaves the other users' pushers with a different app ID or pushkey alone") {
+            it("rejects deregistering another user's pusher and keeps it") {
                 val (_, service) = wiring()
-                service.register(otherUserId, httpPusher(pushKey = "key-shared", appId = "app.two"))
-                service.register(otherUserId, httpPusher(pushKey = "key-other"))
+                val pusher = httpPusher(pushKey = "key-shared")
+                service.register(otherUserId, pusher)
 
-                service.register(userId, httpPusher(pushKey = "key-shared"))
+                shouldThrow<PusherOfOtherUserException> { service.remove(userId, pusher.pusherId) }
 
-                service.get(otherUserId) shouldHaveSize 2
+                service.get(otherUserId) shouldContainExactly listOf(pusher)
+            }
+
+            it("lets another user register the pusher once its owner deregistered it") {
+                val (_, service) = wiring()
+                val pusher = httpPusher(pushKey = "key-shared")
+                service.register(otherUserId, pusher)
+                service.remove(otherUserId, pusher.pusherId)
+
+                service.register(userId, pusher)
+
+                service.get(userId) shouldContainExactly listOf(pusher)
+            }
+
+            it("lets another user register the pusher once the Push Gateway rejected its pushkey") {
+                val (_, service) = wiring()
+                val pusher = httpPusher(pushKey = "key-shared")
+                service.register(otherUserId, pusher)
+                service.removeMany(otherUserId, setOf("key-shared"))
+
+                service.register(userId, pusher)
+
+                service.get(userId) shouldContainExactly listOf(pusher)
             }
 
             it("keeps the caller's own registration when the caller registers again") {
@@ -344,6 +378,45 @@ class ManagePusherServiceTest :
                 service.register(userId, httpPusher(pushKey = "key-shared", deviceDisplayName = "Second"))
 
                 service.get(userId).single().deviceDisplayName shouldBe "Second"
+            }
+
+            it("lets a user re-register a pusher it holds even when the index names another user as well") {
+                // Pushers shared through `append: true` before A_29978, or registered before the index existed,
+                // are held by more than one user. Each of them keeps managing its own registration.
+                val (storageRecords, service) = wiring()
+                val pusher = httpPusher(pushKey = "key-shared")
+                service.register(userId, pusher)
+                ownersRepository(storageRecords).update(pusher.pusherId) { it?.add(otherUserId) }
+
+                service.register(userId, httpPusher(pushKey = "key-shared", deviceDisplayName = "Renamed"))
+                service.remove(userId, pusher.pusherId)
+
+                service.get(userId).shouldBeEmpty()
+            }
+
+            it("keeps the pushkey holder index in step with registration and removal") {
+                val (storageRecords, service) = wiring()
+                val holders = holdersRepository(storageRecords)
+                service.register(userId, httpPusher(pushKey = "key-shared", appId = "app.one"))
+                service.register(userId, httpPusher(pushKey = "key-shared", appId = "app.two"))
+
+                service.remove(userId, PusherId(appId = "app.one", pushKey = "key-shared"))
+                holders.findBy("key-shared").shouldNotBeNull().holders shouldContainExactly setOf(userId)
+
+                service.remove(userId, PusherId(appId = "app.two", pushKey = "key-shared"))
+                holders.findBy("key-shared").shouldBeNull()
+            }
+
+            it("drops a pushkey the Push Gateway rejected from both indexes") {
+                val (storageRecords, service) = wiring()
+                service.register(userId, httpPusher(pushKey = "key-shared"))
+
+                service.removeMany(userId, setOf("key-shared"))
+
+                holdersRepository(storageRecords).findBy("key-shared").shouldBeNull()
+                ownersRepository(
+                    storageRecords,
+                ).findBy(PusherId(appId = "app.one", pushKey = "key-shared")).shouldBeNull()
             }
 
             it("drops a removed pusher's owner from the index") {
@@ -357,52 +430,33 @@ class ManagePusherServiceTest :
                 ).findBy(PusherId(appId = "app.one", pushKey = "key-shared")).shouldBeNull()
             }
 
-            it("finishes the removal on retry when the first attempt failed halfway") {
-                val raw = InMemoryStorageRecordDAO()
-                val otherUsersRecord = "kvnr:${otherUserId.value}_pushers"
-                val failing =
-                    object : StorageRecordDAO by raw {
-                        var failOtherUsersDelete = false
-
-                        override fun delete(recordId: String) {
-                            check(!(failOtherUsersDelete && recordId == otherUsersRecord)) { "simulated outage" }
-                            raw.delete(recordId)
-                        }
-                    }
-                val service = service(failing)
-                service.register(otherUserId, httpPusher(pushKey = "key-shared"))
-                failing.failOtherUsersDelete = true
-
-                shouldThrow<IllegalStateException> { service.register(userId, httpPusher(pushKey = "key-shared")) }
-                failing.failOtherUsersDelete = false
-                service.register(userId, httpPusher(pushKey = "key-shared"))
-
-                service.get(otherUserId).shouldBeEmpty()
-                service.get(userId) shouldHaveSize 1
-            }
-
-            it("leaves the other users' registrations alone when the caller's own registration fails") {
+            it("is not blocked by its own earlier attempt that failed halfway") {
                 val raw = InMemoryStorageRecordDAO()
                 val failing =
                     object : StorageRecordDAO by raw {
+                        var failPushersSave = true
+
                         override fun save(
                             recordId: String,
                             payload: StorageRecord,
                             expectedTransVerifier: Int?,
                             ttl: Duration?,
                         ) {
-                            check(recordId != logicalId) { "simulated outage" }
+                            check(!(failPushersSave && recordId == logicalId)) { "simulated outage" }
                             raw.save(recordId, payload, expectedTransVerifier, ttl)
                         }
                     }
                 val service = service(failing)
-                service.register(otherUserId, httpPusher(pushKey = "key-shared"))
 
                 shouldThrow<IllegalStateException> { service.register(userId, httpPusher(pushKey = "key-shared")) }
+                failing.failPushersSave = false
+                service.register(userId, httpPusher(pushKey = "key-shared"))
 
-                service.get(otherUserId) shouldHaveSize 1
+                service.get(userId) shouldHaveSize 1
             }
+        }
 
+        describe("message history on registration (A_29989)") {
             it("starts with an empty message history for a pushkey the user does not hold yet (A_29989)") {
                 val (storageRecords, service) = wiring()
                 val history = historyRepository(storageRecords)
@@ -475,8 +529,7 @@ class ManagePusherServiceTest :
             }
 
             it("is a no-op for a user we hold no record for") {
-                // Deregistration is idempotent, and answering differently here would reveal whether a KVNR
-                // has any pushers at all (A_29978).
+                // Deregistration of a pusher nobody holds is idempotent.
                 val (storageRecords, service) = wiring()
 
                 service.remove(userId, PusherId(appId = "app.one", pushKey = "key-absent"))
@@ -601,6 +654,7 @@ class ManagePusherServiceTest :
                     ManagePusherService(
                         recording,
                         ownersRepository(InMemoryStorageRecordDAO()),
+                        holdersRepository(InMemoryStorageRecordDAO()),
                         historyRepository(InMemoryStorageRecordDAO()),
                         FixedClock(),
                         false,

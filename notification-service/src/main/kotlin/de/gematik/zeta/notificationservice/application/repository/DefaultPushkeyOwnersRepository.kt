@@ -51,7 +51,7 @@ class DefaultPushkeyOwnersRepository(
         pusherId: PusherId,
         transform: (PushkeyOwners?) -> PushkeyOwners?,
     ) {
-        update(logicalId(pusherId), transform)
+        update(logicalId(pusherId), transform = transform)
     }
 
     override fun markedForRemoval(aggregate: PushkeyOwners): Boolean = aggregate.markedForRemoval()

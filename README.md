@@ -64,7 +64,9 @@ original receipt without dispatching a second push.
 
 Devices register a *pusher* (their push target incl. the Push Gateway URL), toggle channels per
 device, and read the notification history for a device. Every operation is bound to the
-authenticated subject — a device can only ever see and change its own user's data.
+authenticated subject — a device can only ever see and change its own user's data. An operation on
+another user's pusher or pushkey is rejected with `403 M_FORBIDDEN` (A_29978); see "Current
+limitations" for what that means for `append` and for pushers registered by an earlier release.
 
 ## Getting started
 
@@ -152,6 +154,10 @@ contracts are the endpoint reference:
   submit a notification, read a user's active channels.
 - [`openApi_notification_fachdienst.yaml`](docs/openApi_notification_fachdienst.yaml) — **FdV API:**
   manage pushers, configure channels per device, read notification history.
+
+All three files, the Push Gateway contract included, are copies of gematik specifications;
+[`docs/README.md`](docs/README.md) names the official source and version of each and lists the
+local deviations.
 
 All errors share one body shape — `{"errorCode": "...", "errorDetail": "..."}`, with the codes
 listed per endpoint in the contracts. Error details are deliberately kept free of request-body
@@ -321,7 +327,13 @@ unwraps every entry once, on first use, and holds the keys in memory only, overw
 (A_29958). In regular operation a request makes no call to the HSM.
 
 ```json
-{"id":"notification-service-keychain-v2","kekId":"notification-service-keychain-kek-aesgcm-v1","activeFrom":"2026-11-01T00:00:00Z","emergency":true,"keys":"<base64 of iv ‖ ciphertext ‖ tag>"}
+{
+  "id": "notification-service-keychain-v2",
+  "kekId": "notification-service-keychain-kek-aesgcm-v1",
+  "activeFrom": "2026-11-01T00:00:00Z",
+  "emergency": true,
+  "keys": "<base64 of iv ‖ ciphertext ‖ tag>"
+}
 ```
 
 `emergency` is present only on an emergency entry (see "Key rotation"). For one, the associated data
@@ -640,6 +652,20 @@ Known gaps:
   configured state does not show up as a server error in error rates and retry rules, and no change
   to the gematik FdV contract. `PUSHER_NOT_FOUND` and `NOTIFICATION_NOT_FOUND` on these paths are
   outside the FdV contract as well.
+- **Another user's pusher is answered with `403 M_FORBIDDEN`** (A_29978), on `POST /pushers/set`
+  (registration with or without `append`, and deregistration), `GET`/`POST /channels/{pushkey}` and
+  `GET /history/device/{pushkey}`. Like `PUSHER_NOT_FOUND`, the answer is outside the gematik FdV
+  contract, which is left unchanged. A pusher is its app id and pushkey: the same pushkey under
+  another app id is a different pusher and can be registered by another user. A device that changes
+  accounts has to deregister its pusher first; the earlier takeover through `append: false`
+  (A_27154, which does not apply to this service) is gone, and `append` is accepted but has no
+  effect. The answer reveals that someone holds the pushkey, which A_29978 accepts. Two indexes,
+  stored pseudonymized and sealed like every other record, tell who holds what: one per app id and
+  pushkey for `/pushers/set`, one per pushkey for the channel and history paths. Pushers registered
+  by an earlier release enter the second index only when their owner registers them again; until
+  then another user gets `404 PUSHER_NOT_FOUND` for them on the channel and history paths, never
+  their data. Pushers that two users shared through `append: true` in an earlier release stay
+  shared, and each of the two can still update or deregister its own registration.
 - **`reference` is not forwarded on the plain dispatch path** — two gematik contracts disagree, and
   until they are reconciled this service follows the schema. The RS OpenAPI describes `POST
   /notifications` as passing the `reference` on as an unencrypted `identifier`, but

@@ -375,10 +375,20 @@ request POST "$NS_URL/channels/ak-$RUN-device-1" \
   -H "zeta-user-info: $(user_info "$USER_NO_CHANNEL")" \
   -H "Content-Type: application/json" \
   -d "{\"channels\":[{\"id\":\"$CHANNEL\",\"status\":\"enabled\"}]}"
-if [ "$STATUS" = "404" ] && echo "$BODY" | grep -q '"errorCode":"PUSHER_NOT_FOUND"'; then
-  planned "Channel-Konfiguration auf fremdem Pusher → 404 PUSHER_NOT_FOUND"
+if [ "$STATUS" = "403" ] && echo "$BODY" | grep -q '"errorCode":"M_FORBIDDEN"'; then
+  planned "Channel-Konfiguration auf fremdem Pusher → 403 M_FORBIDDEN"
 else
-  bad "erwartet: 404 PUSHER_NOT_FOUND auf fremdem Pusher"
+  bad "erwartet: 403 M_FORBIDDEN auf fremdem Pusher"
+fi
+request POST "$NS_URL/pushers/set" \
+  -H "zeta-user-info: $(user_info "$USER_NO_CHANNEL")" \
+  --json "{\"pushkey\":\"ak-$RUN-device-1\",\"app_id\":\"de.gematik.zeta.demo\",\"kind\":\"http\",
+           \"app_display_name\":\"Fremd\",\"device_display_name\":\"Fremd\",
+           \"lang\":\"de\",\"data\":{\"url\":\"$PUSHER_URL\"}}"
+if [ "$STATUS" = "403" ] && echo "$BODY" | grep -q '"errorCode":"M_FORBIDDEN"'; then
+  planned "Registrierung eines fremden Pushers → 403 M_FORBIDDEN"
+else
+  bad "erwartet: 403 M_FORBIDDEN bei Registrierung eines fremden Pushers"
 fi
 
 section "AK 18: Keine Nutzeridentifikatoren Richtung Push Gateway (A_29984)"

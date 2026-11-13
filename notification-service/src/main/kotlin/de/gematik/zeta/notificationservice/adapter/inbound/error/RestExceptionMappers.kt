@@ -36,6 +36,7 @@ import de.gematik.zeta.notificationservice.domain.error.NotificationNotFoundExce
 import de.gematik.zeta.notificationservice.domain.error.NotificationServiceException
 import de.gematik.zeta.notificationservice.domain.error.PayloadTooLargeException
 import de.gematik.zeta.notificationservice.domain.error.PusherNotFoundException
+import de.gematik.zeta.notificationservice.domain.error.PusherOfOtherUserException
 import de.gematik.zeta.notificationservice.domain.error.UserNotFoundException
 import de.gematik.zeta.notificationservice.domain.error.redacted
 import io.smallrye.faulttolerance.api.RateLimitException
@@ -109,6 +110,7 @@ class RestExceptionMappers {
         when (e) {
             is UserNotFoundException -> errorResponse(NOT_FOUND, "USER_NOT_FOUND", e.message)
             is PusherNotFoundException -> errorResponse(NOT_FOUND, "PUSHER_NOT_FOUND", e.message)
+            is PusherOfOtherUserException -> errorResponse(FORBIDDEN, "M_FORBIDDEN", e.message)
             is NotificationNotFoundException -> errorResponse(NOT_FOUND, "NOTIFICATION_NOT_FOUND", e.message)
             is HistoryDisabledException -> errorResponse(NOT_FOUND, "HISTORY_DISABLED", e.message)
             is ChannelNotAllowedException -> errorResponse(FORBIDDEN, "CHANNEL_NOT_ALLOWED", e.message)

@@ -35,6 +35,7 @@ import de.gematik.zeta.notificationservice.domain.error.NotificationBacklogExcep
 import de.gematik.zeta.notificationservice.domain.error.NotificationNotFoundException
 import de.gematik.zeta.notificationservice.domain.error.PayloadTooLargeException
 import de.gematik.zeta.notificationservice.domain.error.PusherNotFoundException
+import de.gematik.zeta.notificationservice.domain.error.PusherOfOtherUserException
 import de.gematik.zeta.notificationservice.domain.error.UserNotFoundException
 import de.gematik.zeta.notificationservice.testsupport.withQuietLogger
 import io.kotest.assertions.throwables.shouldThrow
@@ -77,6 +78,13 @@ class RestExceptionMappersTest :
                 val response = mappers.toResponse(PusherNotFoundException())
 
                 (response.entity as ErrorResponse).toString() shouldNotContain "pushkey"
+            }
+
+            it("maps PusherOfOtherUserException to 403 with M_FORBIDDEN (A_29978)") {
+                val response = mappers.toResponse(PusherOfOtherUserException())
+
+                response.status shouldBe RestResponse.Status.FORBIDDEN.statusCode
+                (response.entity as ErrorResponse).errorCode shouldBe "M_FORBIDDEN"
             }
 
             it("maps NotificationNotFoundException to 404 with NOTIFICATION_NOT_FOUND") {

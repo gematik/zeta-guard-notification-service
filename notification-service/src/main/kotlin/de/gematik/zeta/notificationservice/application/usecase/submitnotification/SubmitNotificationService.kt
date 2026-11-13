@@ -67,9 +67,9 @@ class SubmitNotificationService(
         } else if (PushPayloadCodec.serialize(command.payload).size > MAX_PLAIN_PAYLOAD_BYTES) {
             throw PayloadTooLargeException(MAX_PLAIN_PAYLOAD_BYTES)
         }
-        val idempotencyKey = command.idempotencyKey?.takeIf { it.isNotEmpty() }
-        require(idempotencyKey == null || idempotencyKey.length <= IdempotencyKey.MAX_KEY_LENGTH) {
-            "Idempotency-Key must not exceed ${IdempotencyKey.MAX_KEY_LENGTH} characters"
+        val idempotencyKey = command.idempotencyKey
+        require(idempotencyKey == null || idempotencyKey.length in 1..IdempotencyKey.MAX_KEY_LENGTH) {
+            "Idempotency-Key must be between 1 and ${IdempotencyKey.MAX_KEY_LENGTH} characters"
         }
         require(command.reference == null || command.reference.length <= MAX_REFERENCE_LENGTH) {
             "reference must not exceed $MAX_REFERENCE_LENGTH characters"

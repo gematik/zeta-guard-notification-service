@@ -147,10 +147,14 @@ class StorageRecordProbe(
 
     private fun notificationLogicalId(notificationId: String): String = "$notificationId$NOTIFICATION_SUFFIX"
 
+    /** Mirrors `DefaultDeviceMessageHistoryRepository`: a SHA-256 over the length-prefixed user and pushkey. */
     private fun historyLogicalId(
         identifier: String,
         pushkey: String,
-    ): String = "${label(identifier)}/$pushkey$HISTORY_SUFFIX"
+    ): String {
+        val canonical = listOf(label(identifier), pushkey).joinToString(":") { "${it.length}:$it" }
+        return sha256Hex(canonical) + HISTORY_SUFFIX
+    }
 
     /**
      * Mirrors `DefaultIdempotencyRepository`: receipt ids are a SHA-256 over the length-prefixed

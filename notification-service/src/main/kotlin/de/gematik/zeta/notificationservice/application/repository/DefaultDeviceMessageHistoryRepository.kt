@@ -34,9 +34,18 @@ import de.gematik.zeta.notificationservice.domain.model.UserId
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import java.security.MessageDigest
 import kotlin.time.Duration
 import kotlin.time.Instant
 
+/**
+ * Stores a [DeviceMessageHistory] under a SHA-256 of user and pushkey, so the id stays fixed-width with sealing off
+ * as well: the pushkey may be up to 512 bytes, the id column holds 450 characters.
+ *
+ * Versions up to 2.0.1 stored it under the plain `<user>/<pushkey>` id. Such a record is still read, moved to the
+ * hashed id by the next append and deleted with the history. Records written by 1.3.x have no retention deadline,
+ * so the legacy id stays until no deployment can hold one of those any more.
+ */
 class DefaultDeviceMessageHistoryRepository(
     storageRecords: StorageRecordDAO,
     pseudonymizer: Pseudonymizer,
@@ -49,14 +58,14 @@ class DefaultDeviceMessageHistoryRepository(
     override fun findBy(
         userId: UserId,
         pushKey: String,
-    ): DeviceMessageHistory? = findByLogicalId(logicalId(userId, pushKey))
+    ): DeviceMessageHistory? = findByLogicalId(logicalId(userId, pushKey), legacyLogicalId(userId, pushKey))
 
     override fun append(
         userId: UserId,
         pushKey: String,
         message: HistoryMessage,
     ) {
-        update(logicalId(userId, pushKey)) { history ->
+        update(logicalId(userId, pushKey), legacyLogicalId(userId, pushKey)) { history ->
             (history ?: DeviceMessageHistory.empty(userId, pushKey)).append(message)
         }
     }
@@ -65,8 +74,24 @@ class DefaultDeviceMessageHistoryRepository(
         userId: UserId,
         pushKey: String,
     ) {
-        delete(logicalId(userId, pushKey))
+        delete(logicalId(userId, pushKey), legacyLogicalId(userId, pushKey))
     }
+
+    // Both exist only after a rolling update in which an old instance recreated the legacy record. Each keeps
+    // its own retention deadline, so the merge happens on read and is never written back.
+    override fun merge(
+        legacy: DeviceMessageHistory,
+        current: DeviceMessageHistory,
+    ): DeviceMessageHistory =
+        DeviceMessageHistory.reconstitute(
+            userId = current.userId,
+            pushKey = current.pushKey,
+            messages =
+                (legacy.messages + current.messages)
+                    .distinctBy { it.notificationId }
+                    .sortedBy { it.sentAt }
+                    .takeLast(DeviceMessageHistory.MAX_MESSAGES),
+        )
 
     override fun serialize(aggregate: DeviceMessageHistory): String =
         json.encodeToString(
@@ -103,6 +128,23 @@ class DefaultDeviceMessageHistoryRepository(
         }
 
     private fun logicalId(
+        userId: UserId,
+        pushKey: String,
+    ): String = sha256Hex(canonicalForm(userId, pushKey)) + LOGICAL_ID_SUFFIX
+
+    /** Length-prefixed so neither part can fake a boundary with a colon of its own. */
+    private fun canonicalForm(
+        userId: UserId,
+        pushKey: String,
+    ): String = listOf(userId.storageLabel(), pushKey).joinToString(":") { "${it.length}:$it" }
+
+    private fun sha256Hex(input: String): String =
+        MessageDigest
+            .getInstance("SHA-256")
+            .digest(input.encodeToByteArray())
+            .toHexString()
+
+    private fun legacyLogicalId(
         userId: UserId,
         pushKey: String,
     ): String = "${userId.storageLabel()}/$pushKey$LOGICAL_ID_SUFFIX"

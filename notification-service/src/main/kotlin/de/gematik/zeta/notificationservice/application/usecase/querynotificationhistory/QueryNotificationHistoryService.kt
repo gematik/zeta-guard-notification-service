@@ -27,11 +27,12 @@ import de.gematik.zeta.notificationservice.application.config.HistoryFeature
 import de.gematik.zeta.notificationservice.application.repository.DeviceMessageHistoryRepository
 import de.gematik.zeta.notificationservice.application.repository.NotificationsRepository
 import de.gematik.zeta.notificationservice.application.repository.PushersRepository
+import de.gematik.zeta.notificationservice.application.repository.PushkeyHoldersRepository
 import de.gematik.zeta.notificationservice.domain.error.HistoryDisabledException
 import de.gematik.zeta.notificationservice.domain.error.NotificationNotFoundException
-import de.gematik.zeta.notificationservice.domain.error.PusherNotFoundException
 import de.gematik.zeta.notificationservice.domain.model.HistoryMessage
 import de.gematik.zeta.notificationservice.domain.model.NotificationId
+import de.gematik.zeta.notificationservice.domain.model.PushkeyHolders
 import de.gematik.zeta.notificationservice.domain.model.UserId
 import jakarta.enterprise.context.ApplicationScoped
 
@@ -40,6 +41,7 @@ class QueryNotificationHistoryService(
     private val notificationsRepository: NotificationsRepository,
     private val deviceMessageHistoryRepository: DeviceMessageHistoryRepository,
     private val pushersRepository: PushersRepository,
+    private val pushkeyHoldersRepository: PushkeyHoldersRepository,
     private val historyFeature: HistoryFeature,
 ) : QueryNotificationHistoryUseCase {
     override fun messageOf(
@@ -65,7 +67,9 @@ class QueryNotificationHistoryService(
         if (!historyFeature.isEnabled) {
             throw HistoryDisabledException()
         }
-        pushersRepository.findBy(userId)?.channelConfigOf(pushKey) ?: throw PusherNotFoundException()
+        // 403 for a pushkey another user holds (A_29978), 404 for one nobody holds.
+        pushersRepository.findBy(userId)?.channelConfigOf(pushKey)
+            ?: throw PushkeyHolders.errorFor(pushkeyHoldersRepository.findBy(pushKey), userId)
         return deviceMessageHistoryRepository.findBy(userId, pushKey)?.messages.orEmpty()
     }
 }

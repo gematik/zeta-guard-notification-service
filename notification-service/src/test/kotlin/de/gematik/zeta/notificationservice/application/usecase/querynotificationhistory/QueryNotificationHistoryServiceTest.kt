@@ -28,6 +28,7 @@ import de.gematik.zeta.notificationservice.application.config.HistoryFeature
 import de.gematik.zeta.notificationservice.application.repository.DefaultDeviceMessageHistoryRepository
 import de.gematik.zeta.notificationservice.application.repository.DefaultNotificationsRepository
 import de.gematik.zeta.notificationservice.application.repository.DefaultPushersRepository
+import de.gematik.zeta.notificationservice.application.repository.DefaultPushkeyHoldersRepository
 import de.gematik.zeta.notificationservice.application.repository.DeviceMessageHistoryRepository
 import de.gematik.zeta.notificationservice.application.repository.ToggleableDeviceMessageHistoryRepository
 import de.gematik.zeta.notificationservice.application.repository.encryption.NoOpPayloadSealer
@@ -35,6 +36,7 @@ import de.gematik.zeta.notificationservice.application.repository.pseudonymizati
 import de.gematik.zeta.notificationservice.domain.error.HistoryDisabledException
 import de.gematik.zeta.notificationservice.domain.error.NotificationNotFoundException
 import de.gematik.zeta.notificationservice.domain.error.PusherNotFoundException
+import de.gematik.zeta.notificationservice.domain.error.PusherOfOtherUserException
 import de.gematik.zeta.notificationservice.domain.model.ChannelId
 import de.gematik.zeta.notificationservice.domain.model.HistoryMessage
 import de.gematik.zeta.notificationservice.domain.model.Notification
@@ -45,6 +47,7 @@ import de.gematik.zeta.notificationservice.domain.model.Pusher
 import de.gematik.zeta.notificationservice.domain.model.PusherData
 import de.gematik.zeta.notificationservice.domain.model.PusherId
 import de.gematik.zeta.notificationservice.domain.model.PushersCollection
+import de.gematik.zeta.notificationservice.domain.model.PushkeyHolders
 import de.gematik.zeta.notificationservice.domain.model.UserId
 import de.gematik.zeta.notificationservice.testsupport.FixedClock
 import io.kotest.assertions.throwables.shouldThrow
@@ -83,6 +86,7 @@ class QueryNotificationHistoryServiceTest :
             private val feature = HistoryFeature { historyEnabled() }
 
             val pushers = DefaultPushersRepository(storageRecords, NoOpPseudonymizer(), NoOpPayloadSealer())
+            val holders = DefaultPushkeyHoldersRepository(storageRecords, NoOpPseudonymizer(), NoOpPayloadSealer())
             val notifications =
                 DefaultNotificationsRepository(
                     storageRecords = storageRecords,
@@ -103,12 +107,15 @@ class QueryNotificationHistoryServiceTest :
                 )
 
             val service: QueryNotificationHistoryUseCase =
-                QueryNotificationHistoryService(notifications, history, pushers, feature)
+                QueryNotificationHistoryService(notifications, history, pushers, holders, feature)
 
             fun register(
                 user: UserId,
                 pushKey: String,
-            ) = pushers.update(user) { PushersCollection.create(user, httpPusher(pushKey)) }
+            ) {
+                pushers.update(user) { PushersCollection.create(user, httpPusher(pushKey)) }
+                holders.updateHolders(pushKey) { it?.add(user) ?: PushkeyHolders.create(pushKey, user) }
+            }
 
             fun store(owner: UserId): NotificationId {
                 val id = NotificationId.random()
@@ -173,6 +180,18 @@ class QueryNotificationHistoryServiceTest :
                 fixture.register(userId, "key-1")
 
                 shouldThrow<PusherNotFoundException> { fixture.service.messagesOf(userId, "key-unknown") }
+            }
+
+            it("rejects a pushkey another user holds with 403 rather than 404 (A_29978)") {
+                val fixture = Fixture()
+                fixture.register(otherUserId, "key-foreign")
+                fixture.history.append(
+                    otherUserId,
+                    "key-foreign",
+                    HistoryMessage(NotificationId.random(), payload, acceptedAt),
+                )
+
+                shouldThrow<PusherOfOtherUserException> { fixture.service.messagesOf(userId, "key-foreign") }
             }
 
             it("does not expose the history of another user that registered the same pushkey") {

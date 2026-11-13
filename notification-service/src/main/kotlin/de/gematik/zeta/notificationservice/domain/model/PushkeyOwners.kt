@@ -25,10 +25,11 @@ package de.gematik.zeta.notificationservice.domain.model
 
 /**
  * The users that hold a registration for one pusher. It is the reverse of [PushersCollection], which is stored
- * per user, and it exists so that `append: false` can find the other users to remove the pusher from.
+ * per user, and it decides who may register or deregister the pusher: a user other than the ones listed here is
+ * rejected with 403 (A_29978). Normally that is one user; pushers shared through `append: true` before A_29978
+ * can still list several.
  *
- * Registrations made before this index existed are not listed here, so they are removed only after their
- * owner registers again.
+ * Registrations made before this index existed are not listed here until their owner registers them again.
  */
 class PushkeyOwners private constructor(
     val pusherId: PusherId,

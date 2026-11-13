@@ -25,13 +25,16 @@ package de.gematik.zeta.notificationservice.application.usecase.managepusher
 
 import de.gematik.zeta.notificationservice.application.repository.DeviceMessageHistoryRepository
 import de.gematik.zeta.notificationservice.application.repository.PushersRepository
+import de.gematik.zeta.notificationservice.application.repository.PushkeyHoldersRepository
 import de.gematik.zeta.notificationservice.application.repository.PushkeyOwnersRepository
 import de.gematik.zeta.notificationservice.domain.error.InvalidPusherException
 import de.gematik.zeta.notificationservice.domain.error.MissingPusherFieldsException
+import de.gematik.zeta.notificationservice.domain.error.PusherOfOtherUserException
 import de.gematik.zeta.notificationservice.domain.model.Pusher
 import de.gematik.zeta.notificationservice.domain.model.PusherId
 import de.gematik.zeta.notificationservice.domain.model.PusherKeyMaterial
 import de.gematik.zeta.notificationservice.domain.model.PushersCollection
+import de.gematik.zeta.notificationservice.domain.model.PushkeyHolders
 import de.gematik.zeta.notificationservice.domain.model.PushkeyOwners
 import de.gematik.zeta.notificationservice.domain.model.UserId
 import jakarta.enterprise.context.ApplicationScoped
@@ -43,6 +46,7 @@ import kotlin.time.Clock
 class ManagePusherService(
     private val pushersRepository: PushersRepository,
     private val pushkeyOwnersRepository: PushkeyOwnersRepository,
+    private val pushkeyHoldersRepository: PushkeyHoldersRepository,
     private val deviceMessageHistoryRepository: DeviceMessageHistoryRepository,
     private val clock: Clock,
     @param:ConfigProperty(name = "notification.encryption.enabled") private val encryptionEnabled: Boolean,
@@ -60,35 +64,40 @@ class ManagePusherService(
                 material == null -> throw MissingPusherFieldsException(listOf("encryption"))
                 else -> pusher.withKeyMaterial(withinReach(material))
             }
-        val pushKey = registered.pusherId.pushKey
-        if (pushersRepository.findBy(userId)?.channelConfigOf(pushKey) == null) {
+        val pusherId = registered.pusherId
+        val pushKey = pusherId.pushKey
+        val current = pushersRepository.findBy(userId)
+        claim(userId, pusherId, heldAlready = current?.pusher(pusherId) != null)
+        if (current?.channelConfigOf(pushKey) == null) {
             deviceMessageHistoryRepository.delete(userId, pushKey)
         }
         pushersRepository.update(userId) { existing ->
             existing?.register(registered) ?: PushersCollection.create(userId, registered)
         }
-        claim(userId, registered.pusherId, registered.append)
+        pushkeyHoldersRepository.updateHolders(pushKey) { existing ->
+            existing?.add(userId) ?: PushkeyHolders.create(pushKey, userId)
+        }
     }
 
     /**
-     * Records [userId] as an owner of the pusher and, unless [append] is set, removes it from every other owner.
+     * Records [userId] as an owner of the pusher, or rejects the registration if another user owns it (A_29978).
+     *
+     * The check runs inside the optimistic update of the owner index, so of two users registering the same pusher
+     * at once exactly one gets it. A user who already holds the pusher may always register it again: pushers shared
+     * through `append: true` before A_29978, or registered before the index existed, have more than one holder, and
+     * each of them keeps managing its own registration. `append` itself no longer has any effect.
      */
     private fun claim(
         userId: UserId,
         pusherId: PusherId,
-        append: Boolean,
+        heldAlready: Boolean,
     ) {
-        var others: Set<UserId> = emptySet()
         pushkeyOwnersRepository.update(pusherId) { existing ->
-            val owners = existing?.add(userId) ?: PushkeyOwners.create(pusherId, userId)
-            others = owners.othersThan(userId)
-            owners
+            if (!heldAlready && existing != null && existing.othersThan(userId).isNotEmpty()) {
+                throw PusherOfOtherUserException()
+            }
+            existing?.add(userId) ?: PushkeyOwners.create(pusherId, userId)
         }
-        if (append || others.isEmpty()) {
-            return
-        }
-        others.forEach { other -> removePusher(other, pusherId) }
-        pushkeyOwnersRepository.update(pusherId) { existing -> existing?.release(others) }
     }
 
     private fun removePusher(
@@ -103,22 +112,29 @@ class ManagePusherService(
         }
         if (!pushKeyKept) {
             deviceMessageHistoryRepository.delete(userId, pusherId.pushKey)
+            pushkeyHoldersRepository.updateHolders(pusherId.pushKey) { it?.release(userId) }
         }
     }
 
     /**
-     * Deregisters a pusher, tolerating a user or pushkey we hold nothing for.
+     * Deregisters a pusher, tolerating one nobody holds and rejecting one another user holds (A_29978).
      *
-     * Deregistration is idempotent: if there is no record, the desired end state already holds, and that is the
-     * normal situation for anyone who never registered or who just removed their last device. Failing instead
-     * would also answer differently depending on whether a KVNR has any pushers at all, which is the kind of
-     * differential response A_29978 rules out. The contract declares no such error on `POST /pushers/set`
-     * either — only 200, 400 and 429.
+     * Deregistration is idempotent: if no one holds the pusher, the desired end state already holds, and that is the
+     * normal situation for a client that just removed its last device.
      */
     override fun remove(
         userId: UserId,
         pusherId: PusherId,
     ) {
+        if (pushersRepository.findBy(userId)?.pusher(pusherId) == null &&
+            pushkeyOwnersRepository
+                .findBy(pusherId)
+                ?.othersThan(userId)
+                .orEmpty()
+                .isNotEmpty()
+        ) {
+            throw PusherOfOtherUserException()
+        }
         removePusher(userId, pusherId)
         pushkeyOwnersRepository.update(pusherId) { existing -> existing?.release(setOf(userId)) }
     }
@@ -127,8 +143,23 @@ class ManagePusherService(
         userId: UserId,
         pushKeys: Set<String>,
     ) {
-        pushersRepository.update(userId) { existing -> existing?.removeAll(pushKeys) }
-        pushKeys.forEach { deviceMessageHistoryRepository.delete(userId, it) }
+        var removed: List<PusherId> = emptyList()
+        pushersRepository.update(userId) { existing ->
+            removed =
+                existing
+                    ?.pushers
+                    ?.map { it.pusherId }
+                    ?.filter { it.pushKey in pushKeys }
+                    .orEmpty()
+            existing?.removeAll(pushKeys)
+        }
+        removed.forEach { pusherId ->
+            pushkeyOwnersRepository.update(pusherId) { existing -> existing?.release(setOf(userId)) }
+        }
+        pushKeys.forEach { pushKey ->
+            deviceMessageHistoryRepository.delete(userId, pushKey)
+            pushkeyHoldersRepository.updateHolders(pushKey) { it?.release(userId) }
+        }
     }
 
     override fun currentKeyMaterial(

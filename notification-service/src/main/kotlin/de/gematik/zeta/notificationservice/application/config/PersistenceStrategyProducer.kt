@@ -28,11 +28,13 @@ import de.gematik.zeta.notificationservice.application.repository.DefaultDeviceM
 import de.gematik.zeta.notificationservice.application.repository.DefaultIdempotencyRepository
 import de.gematik.zeta.notificationservice.application.repository.DefaultNotificationsRepository
 import de.gematik.zeta.notificationservice.application.repository.DefaultPushersRepository
+import de.gematik.zeta.notificationservice.application.repository.DefaultPushkeyHoldersRepository
 import de.gematik.zeta.notificationservice.application.repository.DefaultPushkeyOwnersRepository
 import de.gematik.zeta.notificationservice.application.repository.DeviceMessageHistoryRepository
 import de.gematik.zeta.notificationservice.application.repository.IdempotencyRepository
 import de.gematik.zeta.notificationservice.application.repository.NotificationsRepository
 import de.gematik.zeta.notificationservice.application.repository.PushersRepository
+import de.gematik.zeta.notificationservice.application.repository.PushkeyHoldersRepository
 import de.gematik.zeta.notificationservice.application.repository.PushkeyOwnersRepository
 import de.gematik.zeta.notificationservice.application.repository.ToggleableDeviceMessageHistoryRepository
 import de.gematik.zeta.notificationservice.application.repository.encryption.Keychain
@@ -85,6 +87,14 @@ class PersistenceStrategyProducer(
         pseudonymizer: Pseudonymizer,
         payloadSealer: PayloadSealer,
     ): PushkeyOwnersRepository = DefaultPushkeyOwnersRepository(storageRecords, pseudonymizer, payloadSealer)
+
+    @Produces
+    @ApplicationScoped
+    fun pushkeyHoldersRepository(
+        storageRecords: StorageRecordDAO,
+        pseudonymizer: Pseudonymizer,
+        payloadSealer: PayloadSealer,
+    ): PushkeyHoldersRepository = DefaultPushkeyHoldersRepository(storageRecords, pseudonymizer, payloadSealer)
 
     @Produces
     @ApplicationScoped

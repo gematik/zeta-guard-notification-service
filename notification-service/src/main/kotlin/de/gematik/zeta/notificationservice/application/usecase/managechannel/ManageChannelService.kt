@@ -24,18 +24,21 @@
 package de.gematik.zeta.notificationservice.application.usecase.managechannel
 
 import de.gematik.zeta.notificationservice.application.repository.PushersRepository
+import de.gematik.zeta.notificationservice.application.repository.PushkeyHoldersRepository
 import de.gematik.zeta.notificationservice.domain.error.PusherNotFoundException
 import de.gematik.zeta.notificationservice.domain.model.ChannelConfiguration
 import de.gematik.zeta.notificationservice.domain.model.ChannelId
 import de.gematik.zeta.notificationservice.domain.model.ChannelRegistry
 import de.gematik.zeta.notificationservice.domain.model.ChannelStatus
 import de.gematik.zeta.notificationservice.domain.model.DeviceChannelConfig
+import de.gematik.zeta.notificationservice.domain.model.PushkeyHolders
 import de.gematik.zeta.notificationservice.domain.model.UserId
 import jakarta.enterprise.context.ApplicationScoped
 
 @ApplicationScoped
 class ManageChannelService(
     private val pushersRepository: PushersRepository,
+    private val pushkeyHoldersRepository: PushkeyHoldersRepository,
     private val channelRegistry: ChannelRegistry,
 ) : ManageChannelUseCase {
     override fun availableChannels(): List<ChannelId> = channelRegistry.all()
@@ -56,8 +59,12 @@ class ManageChannelService(
         val changes = DeviceChannelConfig.changesOf(requested)
         channelRegistry.requireAll(changes.keys)
 
-        pushersRepository.update(userId) { collection ->
-            (collection ?: throw PusherNotFoundException()).configureChannels(pushKey, changes)
+        try {
+            pushersRepository.update(userId) { collection ->
+                (collection ?: throw PusherNotFoundException()).configureChannels(pushKey, changes)
+            }
+        } catch (_: PusherNotFoundException) {
+            throw notHeld(userId, pushKey)
         }
     }
 
@@ -65,5 +72,11 @@ class ManageChannelService(
         userId: UserId,
         pushKey: String,
     ): DeviceChannelConfig =
-        pushersRepository.findBy(userId)?.channelConfigOf(pushKey) ?: throw PusherNotFoundException()
+        pushersRepository.findBy(userId)?.channelConfigOf(pushKey) ?: throw notHeld(userId, pushKey)
+
+    /** 403 for a pushkey another user holds (A_29978), 404 for one nobody holds. */
+    private fun notHeld(
+        userId: UserId,
+        pushKey: String,
+    ) = PushkeyHolders.errorFor(pushkeyHoldersRepository.findBy(pushKey), userId)
 }

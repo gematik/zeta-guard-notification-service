@@ -1,5 +1,30 @@
 # Release Notes
 
+## Release 2.0.2
+
+### fixed
+- With sealing off, a pushkey longer than about 300 characters (the API allows 512 bytes) made every
+  notification to that user fail with `400`: the device history's storage id contained the pushkey and
+  exceeded the 450-character id column. The history is now stored under a SHA-256 of user and pushkey.
+  Histories under the old id are still read, moved to the new id by the next notification (keeping their
+  retention deadline) and deleted with the device. No migration step is needed.
+- **Breaking for clients:** an operation on another user's pusher is rejected with
+  `403 M_FORBIDDEN` (A_29978) instead of succeeding. Registering an app ID and pushkey another user
+  holds, with or without `append`, no longer moves the pusher to the caller and answers `403`;
+  deregistering another user's pusher answers `403` instead of `200`; `GET`/`POST
+  /channels/{pushkey}` and `GET /history/device/{pushkey}` for a pushkey another user holds answer
+  `403` instead of `404 PUSHER_NOT_FOUND`. A pushkey nobody holds still answers `404`, and
+  deregistering a pusher nobody holds still `200`. A device that changes accounts has to deregister
+  its pusher before the new account registers it; the takeover of 2.0.0-rc1 followed A_27154, which
+  does not apply to this service. `append` is still accepted but has no effect. The FdV contract is
+  unchanged; see README "Current limitations".
+- A new index of the users per pushkey tells the `403` from the `404` on the channel and history
+  paths. Pushers registered by an earlier release enter it when their owner registers them again;
+  until then another user still gets `404` for them there. Pushers two users shared through
+  `append: true` stay shared, and each user keeps managing its own registration. A pushkey the Push
+  Gateway rejects is now also removed from the owner index, so it no longer blocks another user from
+  registering it.
+
 ## Release 2.0.1
 
 ### added

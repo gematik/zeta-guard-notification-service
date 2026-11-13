@@ -36,6 +36,7 @@ import de.gematik.zeta.notificationservice.domain.model.SubmissionReceipt
 import io.quarkus.arc.properties.IfBuildProperty
 import io.smallrye.faulttolerance.api.RateLimit
 import jakarta.enterprise.context.ApplicationScoped
+import jakarta.ws.rs.core.HttpHeaders
 import kotlinx.serialization.json.JsonObject
 import org.jboss.resteasy.reactive.RestResponse
 import de.gematik.zeta.notificationservice.adapter.inbound.rs.generated.model.Priority as PriorityDto
@@ -44,13 +45,20 @@ import de.gematik.zeta.notificationservice.adapter.inbound.rs.generated.model.Pr
 @ApplicationScoped
 class NotificationResource(
     private val submitNotificationUseCase: SubmitNotificationUseCase,
+    private val httpHeaders: HttpHeaders,
 ) : NotificationsApi {
     @RateLimit
     override fun submitNotification(
         notificationRequest: NotificationRequest,
         idempotencyKey: String?,
     ): RestResponse<NotificationAccepted> =
-        RestResponse.accepted(submitNotificationUseCase.submit(notificationRequest.toCommand(idempotencyKey)).toApi())
+        RestResponse.accepted(
+            submitNotificationUseCase.submit(notificationRequest.toCommand(getIdempotencyKey(idempotencyKey))).toApi(),
+        )
+
+    // Let service distinguish missing from empty key
+    private fun getIdempotencyKey(idempotencyKey: String?): String? =
+        idempotencyKey ?: httpHeaders.getRequestHeader(IDEMPOTENCY_KEY_HEADER).firstOrNull()
 
     private fun NotificationRequest.toCommand(idempotencyKey: String?): SubmitNotificationCommand =
         SubmitNotificationCommand(
@@ -82,4 +90,8 @@ class NotificationResource(
             PriorityDto.high -> Priority.HIGH
             PriorityDto.normal -> Priority.NORMAL
         }
+
+    private companion object {
+        const val IDEMPOTENCY_KEY_HEADER = "Idempotency-Key"
+    }
 }
